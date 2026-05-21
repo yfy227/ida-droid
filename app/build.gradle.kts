@@ -16,7 +16,7 @@ android {
         // proot from files/proot/bin/proot, so M1 intentionally targets API 28.
         targetSdk = 28
         versionCode = 1
-        versionName = "0.1.0-m3"
+        versionName = "v0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

@@ -1,6 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">IDAdroid</string>
+    <string name="home_about">关于</string>
+    <string name="about_title">关于</string>
+    <string name="about_back_desc">返回</string>
+    <string name="about_author_value">"Wsdx233"</string>
+    <string name="about_author_comment">// 开发者</string>
+    <string name="about_contact_value">QQ(1284321744)\nQ群(691778739)</string>
+    <string name="about_contact_url">mqqapi://card/show_pslcard?src_type=internal&amp;version=1&amp;uin=691778739&amp;card_type=group&amp;source=qrcode</string>
+    <string name="about_contact_comment">// 联系方式</string>
+    <string name="about_core_value">IDA Pro + ida-mcp</string>
+    <string name="about_core_comment">// 核心引擎</string>
+    <string name="about_footer">Build with ❤️ &amp; Kotlin</string>
+    <string name="about_logo_desc">应用图标</string>
+    <string name="about_app_name">IDAdroid</string>
+    <string name="about_motto">&gt; IDA Pro on Android</string>
     <string name="keep_alive_channel_name">IDAdroid 后台保活</string>
     <string name="keep_alive_channel_description">保持 pi RPC、终端和 VNC 相关任务在后台稳定运行。</string>
     <string name="keep_alive_notification_title">IDAdroid 正在后台运行</string>

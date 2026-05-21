@@ -149,7 +149,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private enum class IdaDroidScreen { Home, Settings, Agent }
+private enum class IdaDroidScreen { Home, Settings, Agent, About }
 
 @Composable
 fun IdaDroidApp() {
@@ -249,6 +249,9 @@ fun IdaDroidApp() {
                     },
                     onOpenTerminal = { context.startActivity(Intent(context, ProotTerminalActivity::class.java)) }
                 )
+            } else if (currentScreen == IdaDroidScreen.About) {
+                BackHandler { currentScreen = IdaDroidScreen.Home }
+                AboutScreen(onBackClick = { currentScreen = IdaDroidScreen.Home })
             } else {
                 MainContent(
                     envState = envState,
@@ -260,6 +263,7 @@ fun IdaDroidApp() {
                     transientMessage = transientMessage,
                     onChooseArchive = { picker.launch(arrayOf("*/*")) },
                     onOpenSettings = { currentScreen = IdaDroidScreen.Settings },
+                    onOpenAbout = { currentScreen = IdaDroidScreen.About },
                     onOpenAgent = { currentScreen = IdaDroidScreen.Agent },
                     onOpenTerminal = {
                         context.startActivity(Intent(context, ProotTerminalActivity::class.java))

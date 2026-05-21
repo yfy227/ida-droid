@@ -97,6 +97,7 @@ fun MainContent(
     transientMessage: String?,
     onChooseArchive: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenAbout: () -> Unit,
     onOpenAgent: () -> Unit,
     onOpenTerminal: () -> Unit,
     onRunTerminalCommand: (String) -> Unit,
@@ -131,7 +132,10 @@ fun MainContent(
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Header(onOpenSettings)
+            Header(
+                onOpenSettings = onOpenSettings,
+                onOpenAbout = onOpenAbout
+            )
             when (envState) {
                 EnvironmentState.NoEnvironment -> {
                     WelcomeCard(onChooseArchive, modifier = Modifier.fillMaxWidth())
@@ -221,7 +225,10 @@ fun MainContent(
 }
 
 @Composable
-fun Header(onOpenSettings: () -> Unit) {
+fun Header(
+    onOpenSettings: () -> Unit,
+    onOpenAbout: () -> Unit
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -242,8 +249,13 @@ fun Header(onOpenSettings: () -> Unit) {
                 overflow = TextOverflow.Ellipsis
             )
         }
-        IconButton(onClick = onOpenSettings) {
-            Icon(Icons.Rounded.Settings, contentDescription = "设置", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onOpenAbout) {
+                Icon(Icons.Rounded.Info, contentDescription = "关于", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            IconButton(onClick = onOpenSettings) {
+                Icon(Icons.Rounded.Settings, contentDescription = "设置", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }
