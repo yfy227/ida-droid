@@ -47,10 +47,19 @@ class PiAgentManager(
             return
         }
         val store = repo.loadStore()
+        val defaultSnapshot = if (createDefaultIfReady && store.sessions.isEmpty()) configManager.readSnapshot() else null
+        val defaultPair = defaultSnapshot?.let(::resolveDefaultModel)
+        val defaultProvider = defaultSnapshot?.defaultProvider?.trim()?.takeIf { it.isNotBlank() }
+        val defaultModel = defaultSnapshot?.defaultModel?.trim()?.takeIf { it.isNotBlank() }
+        val defaultThinking = defaultSnapshot?.defaultThinkingLevel?.trim()?.takeIf { it.isNotBlank() }
         val active = when {
             store.activeSessionId != null && store.sessions.any { it.id == store.activeSessionId } -> store.activeSessionId
             store.sessions.isNotEmpty() -> store.sessions.first().id
-            createDefaultIfReady -> repo.ensureDefaultSession().id
+            createDefaultIfReady -> repo.ensureDefaultSession(
+                provider = defaultProvider ?: defaultPair?.provider,
+                model = defaultModel ?: defaultPair?.id,
+                thinkingLevel = defaultThinking
+            ).id
             else -> null
         }
         val sessions = repo.loadStore().sessions
@@ -73,10 +82,12 @@ class PiAgentManager(
         scope.launch {
             runCatching {
                 requireReady()
+                val snapshot = configManager.readSnapshot()
+                val defaultPair = resolveDefaultModel(snapshot)
                 repo.createSession(
                     name = name.ifBlank { null },
-                    provider = configManager.defaultProvider(),
-                    model = configManager.defaultModel(),
+                    provider = configManager.defaultProvider() ?: defaultPair?.provider,
+                    model = configManager.defaultModel() ?: defaultPair?.id,
                     thinkingLevel = configManager.defaultThinking()
                 )
             }.onSuccess { session ->
@@ -118,7 +129,7 @@ class PiAgentManager(
 
     fun startSession(id: String? = null) {
         scope.launch {
-            val sessionId = id ?: _state.value.activeSessionId ?: repo.ensureDefaultSession().id
+            val sessionId = id ?: _state.value.activeSessionId ?: createDefaultSessionWithConfiguredModel().id
             runCatching { startSessionInternal(sessionId) }
                 .onSuccess { refreshRuntimeState(sessionId) }
                 .onFailure { error -> setError("启动 pi RPC 失败：${error.message}") }
@@ -137,7 +148,7 @@ class PiAgentManager(
     fun sendPrompt(text: String, attachments: List<DraftAttachment> = emptyList(), sendMode: String? = null) {
         scope.launch {
             val sessionId = _state.value.activeSessionId ?: run {
-                val created = repo.ensureDefaultSession()
+                val created = createDefaultSessionWithConfiguredModel()
                 refresh()
                 created.id
             }
@@ -209,7 +220,7 @@ class PiAgentManager(
     fun loadSessionModels(force: Boolean = false) {
         scope.launch {
             if (_state.value.sessionModels.isNotEmpty() && !force) return@launch
-            val sessionId = _state.value.activeSessionId ?: repo.ensureDefaultSession().id
+            val sessionId = _state.value.activeSessionId ?: createDefaultSessionWithConfiguredModel().id
             _state.update { it.copy(modelLoading = true) }
             runCatching {
                 val runtime = startSessionInternal(sessionId)
@@ -218,10 +229,12 @@ class PiAgentManager(
                     runCatching { json.decodeFromJsonElement<PiModel>(item) }.getOrNull()
                 }
             }.onSuccess { models ->
-                _state.update { it.copy(sessionModels = models, modelLoading = false) }
+                val fallback = configManager.readSnapshot().modelCatalog.models.map { it.toPiModel() }
+                _state.update { it.copy(sessionModels = mergeModels(models, fallback), modelLoading = false) }
             }.onFailure { error ->
-                _state.update { it.copy(modelLoading = false) }
-                setError("加载模型失败：${error.message}")
+                val fallback = configManager.readSnapshot().modelCatalog.models.map { it.toPiModel() }
+                _state.update { it.copy(sessionModels = fallback, modelLoading = false) }
+                if (fallback.isEmpty()) setError("加载模型失败：${error.message}")
             }
         }
     }
@@ -231,11 +244,12 @@ class PiAgentManager(
         scope.launch {
             val sessionId = _state.value.activeSessionId ?: return@launch
             runCatching {
-                val runtime = startSessionInternal(sessionId)
-                runtime.setModel(provider, model.id)
+                val runtime = runtimes[sessionId]?.takeIf { it.isActive() }
+                if (runtime != null) runtime.setModel(provider, model.id)
                 repo.patchSession(sessionId) { it.copy(provider = provider, model = model.id, lastActiveAt = Instant.now().toString()) }
-            }.onSuccess { refreshRuntimeState(sessionId) }
-                .onFailure { error -> setError("切换模型失败：${error.message}") }
+            }.onSuccess {
+                if (runtimes[sessionId]?.isActive() == true) refreshRuntimeState(sessionId) else refresh()
+            }.onFailure { error -> setError("切换模型失败：${error.message}") }
         }
     }
 
@@ -355,17 +369,30 @@ class PiAgentManager(
 
     fun fileRef(path: String): String = attachmentManager.fileRef(path)
 
+    private fun createDefaultSessionWithConfiguredModel(): AgentSessionRecord {
+        val snapshot = configManager.readSnapshot()
+        val defaultPair = resolveDefaultModel(snapshot)
+        return repo.ensureDefaultSession(
+            provider = snapshot.defaultProvider.trim().takeIf { it.isNotBlank() } ?: defaultPair?.provider,
+            model = snapshot.defaultModel.trim().takeIf { it.isNotBlank() } ?: defaultPair?.id,
+            thinkingLevel = snapshot.defaultThinkingLevel.trim().takeIf { it.isNotBlank() }
+        )
+    }
+
     private suspend fun startSessionInternal(sessionId: String): PiRpcRuntime = withContext(Dispatchers.IO) {
         requireReady()
         ProotBinaryInstaller(appContext, paths).ensureInstalled()
         PiWorkspaceMaterializer().materialize(paths.rootfsDir)
+        val snapshot = configManager.readSnapshot()
+        require(snapshot.modelCatalog.isUsable) {
+            snapshot.modelCatalog.parseError?.let { "models.json 配置无效：$it" } ?: "请先在 models.json 中配置至少一个 provider 和 model"
+        }
         val session = repo.patchSession(sessionId) {
+            require(!it.provider.isNullOrBlank() && !it.model.isNullOrBlank()) { "当前 Session 未配置 provider/model，请先选择模型" }
             it.copy(
                 status = "starting",
                 error = null,
-                provider = it.provider ?: configManager.defaultProvider(),
-                model = it.model ?: configManager.defaultModel(),
-                thinkingLevel = it.thinkingLevel ?: configManager.defaultThinking(),
+                thinkingLevel = it.thinkingLevel ?: snapshot.defaultThinkingLevel.trim().takeIf { value -> value.isNotBlank() },
                 lastActiveAt = Instant.now().toString()
             )
         }
@@ -681,6 +708,27 @@ class PiAgentManager(
 
     private fun requireReady() {
         require(paths.readyMarker.isFile && paths.rootfsDir.isDirectory) { "rootfs 尚未 ready，请先导入并验证环境" }
+    }
+
+    private fun resolveDefaultModel(snapshot: PiConfigSnapshot): AgentConfiguredModel? {
+        val provider = snapshot.defaultProvider.trim().takeIf { it.isNotBlank() }
+        val model = snapshot.defaultModel.trim().takeIf { it.isNotBlank() }
+        val models = snapshot.modelCatalog.models
+        if (provider != null && model != null) {
+            models.firstOrNull { it.provider == provider && it.id == model }?.let { return it }
+            return AgentConfiguredModel(provider = provider, id = model)
+        }
+        if (provider != null) models.firstOrNull { it.provider == provider }?.let { return it }
+        if (model != null) models.firstOrNull { it.id == model }?.let { return it }
+        return models.firstOrNull()
+    }
+
+    private fun mergeModels(primary: List<PiModel>, fallback: List<PiModel>): List<PiModel> {
+        val seen = linkedSetOf<String>()
+        return (primary + fallback).filter { model ->
+            val key = "${model.providerNameOrNull().orEmpty()}/${model.id}"
+            seen.add(key)
+        }
     }
 
     private fun modelLabel(session: AgentSessionRecord?): String = listOfNotNull(

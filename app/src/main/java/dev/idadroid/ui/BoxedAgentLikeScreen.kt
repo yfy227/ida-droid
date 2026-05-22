@@ -45,6 +45,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Api
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
@@ -154,6 +155,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.idadroid.agent.AgentModelCatalog
 import dev.idadroid.agent.AgentSessionRecord
 import dev.idadroid.agent.AgentUiState
 import dev.idadroid.agent.ChatAttachment
@@ -165,6 +167,7 @@ import dev.idadroid.agent.PiConfigSnapshot
 import dev.idadroid.agent.PiModel
 import dev.idadroid.agent.SessionStats
 import dev.idadroid.agent.attachmentSummary
+import dev.idadroid.agent.parseAgentModelCatalog
 import dev.idadroid.agent.pretty
 import dev.idadroid.agent.providerNameOrNull
 import dev.idadroid.files.RootfsFileSharing
@@ -183,6 +186,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlin.math.max
 
 private enum class AgentToolTab { Terminal, Files, Pi, Ida }
+private enum class AgentOverlay { Sessions, Tools, ModelsEditor }
 private val ThinkingLevels = listOf("off", "minimal", "low", "medium", "high", "xhigh")
 private val UiJson = Json { prettyPrint = true; ignoreUnknownKeys = true; explicitNulls = false }
 private val MarkdownParagraphBreakRegex = Regex("\\n{2,}")
@@ -206,13 +210,17 @@ fun BoxedAgentLikeScreen(
     val scope = rememberCoroutineScope()
     var text by remember(agentState.activeSessionId) { mutableStateOf("") }
     var attachments by remember(agentState.activeSessionId) { mutableStateOf<List<DraftAttachment>>(emptyList()) }
-    var showSessions by remember { mutableStateOf(false) }
-    var showTools by remember { mutableStateOf(false) }
+    var overlay by remember { mutableStateOf<AgentOverlay?>(null) }
+    val showSessions = overlay == AgentOverlay.Sessions
+    val showTools = overlay == AgentOverlay.Tools
+    val showModelsEditor = overlay == AgentOverlay.ModelsEditor
     var showThinkingMenu by remember { mutableStateOf(false) }
     var showModelMenu by remember { mutableStateOf(false) }
     var showCompactMenu by remember { mutableStateOf(false) }
     var showSendModeMenu by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
+    var forceShowConfigDialog by remember { mutableStateOf(false) }
+    var dismissedConfigPromptKey by remember { mutableStateOf<String?>(null) }
     var dialogMessage by remember { mutableStateOf<String?>(null) }
     var quickActionsVisible by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
@@ -232,14 +240,22 @@ fun BoxedAgentLikeScreen(
         return
     }
 
-    BackHandler(enabled = showSessions || showTools) {
-        showSessions = false
-        showTools = false
+    BackHandler {
+        if (overlay != null) overlay = null else onBack()
     }
 
     val session = agentState.activeSession
-    LaunchedEffect(session?.id, session?.status) {
-        if (session != null && session.status in setOf("idle", "stopped")) manager.startSession(session.id)
+    val needsAgentConfig = agentState.activeSessionId != null && (!agentState.agentConfigReady || !agentState.activeSessionHasConfiguredModel)
+    val configPromptKey = listOf(
+        agentState.activeSessionId.orEmpty(),
+        agentState.agentConfigReady.toString(),
+        agentState.activeSessionHasConfiguredModel.toString(),
+        agentState.piConfig.modelCatalog.parseError.orEmpty(),
+        agentState.piConfig.modelCatalog.providers.size.toString(),
+        agentState.piConfig.modelCatalog.models.size.toString()
+    ).joinToString("|")
+    LaunchedEffect(session?.id, session?.status, agentState.agentConfigReady, agentState.activeSessionHasConfiguredModel) {
+        if (session != null && !needsAgentConfig && session.status in setOf("idle", "stopped")) manager.startSession(session.id)
     }
     val canSend = text.isNotBlank() || attachments.isNotEmpty()
     val lastMessage = agentState.messages.lastOrNull()
@@ -293,7 +309,7 @@ fun BoxedAgentLikeScreen(
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         if (session == null) {
-            EmptyAgentTopBar(onSessions = { showSessions = true }, onTools = { showTools = true })
+            EmptyAgentTopBar(onSessions = { overlay = AgentOverlay.Sessions }, onTools = { overlay = AgentOverlay.Tools })
             CenterWelcomeBox("选择或创建 Session", "点击左上角打开 Sessions。", null)
         } else {
             ChatTopBar(
@@ -302,8 +318,8 @@ fun BoxedAgentLikeScreen(
                 autoCompact = session.autoCompactionEnabled != false,
                 isWorking = agentState.isWorking,
                 status = agentState.status,
-                onSessions = { showSessions = true },
-                onTools = { showTools = true },
+                onSessions = { overlay = AgentOverlay.Sessions },
+                onTools = { overlay = AgentOverlay.Tools },
                 onRefresh = { manager.refresh(createDefaultIfReady = true); manager.loadMessages() }
             )
             Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -361,10 +377,22 @@ fun BoxedAgentLikeScreen(
                     onShowSendModeMenu = { showSendModeMenu = it },
                     state = agentState,
                     manager = manager,
+                    onOpenConfig = {
+                        if (agentState.agentConfigReady && !agentState.activeSessionHasConfiguredModel) {
+                            showModelMenu = true
+                            manager.loadSessionModels()
+                        } else {
+                            forceShowConfigDialog = true
+                        }
+                    },
                     onSend = { mode ->
-                        manager.sendPrompt(text, attachments, mode)
-                        text = ""
-                        attachments = emptyList()
+                        if (needsAgentConfig) {
+                            forceShowConfigDialog = true
+                        } else {
+                            manager.sendPrompt(text, attachments, mode)
+                            text = ""
+                            attachments = emptyList()
+                        }
                     },
                     onAbort = { manager.abort() }
                 )
@@ -377,16 +405,16 @@ fun BoxedAgentLikeScreen(
         fromStart = true,
         title = "Sessions",
         subtitle = "本机 pi RPC 会话",
-        onClose = { showSessions = false }
+        onClose = { overlay = null }
     ) {
-        SessionsSidePane(state = agentState, manager = manager, onClose = { showSessions = false })
+        SessionsSidePane(state = agentState, manager = manager, onClose = { overlay = null })
     }
     SideOverlay(
         visible = showTools,
         fromStart = false,
         title = "Tools",
         subtitle = "Terminal、Files、Pi、IDA",
-        onClose = { showTools = false }
+        onClose = { overlay = null }
     ) {
         ToolsSidePane(
             state = agentState,
@@ -394,10 +422,41 @@ fun BoxedAgentLikeScreen(
             manager = manager,
             onOpenTerminal = onOpenTerminal,
             onLaunchGui = onLaunchGui,
-            onClose = { showTools = false },
+            onClose = { overlay = null },
+            onOpenModelsEditor = { overlay = AgentOverlay.ModelsEditor },
             onInsertComposer = { insert -> text = appendComposerText(text, insert) }
         )
     }
+    SideOverlay(
+        visible = showModelsEditor,
+        fromStart = false,
+        title = "models.json",
+        subtitle = "全屏可视化编辑 Agent Provider / Model",
+        onClose = { overlay = null },
+        showHeader = false
+    ) {
+        PiSettingsTab(state = agentState, manager = manager, initialShowModelsEditor = true, onCloseEditor = { overlay = null })
+    }
+    }
+    if ((forceShowConfigDialog || (needsAgentConfig && dismissedConfigPromptKey != configPromptKey)) && session != null && overlay == null && !showModelMenu) {
+        AgentConfigRequiredDialog(
+            state = agentState,
+            onDismiss = {
+                forceShowConfigDialog = false
+                dismissedConfigPromptKey = configPromptKey
+            },
+            onConfigure = {
+                forceShowConfigDialog = false
+                dismissedConfigPromptKey = configPromptKey
+                overlay = AgentOverlay.ModelsEditor
+            },
+            onChooseModel = {
+                forceShowConfigDialog = false
+                dismissedConfigPromptKey = configPromptKey
+                showModelMenu = true
+                manager.loadSessionModels()
+            }
+        )
     }
     if (showSearch) {
         SearchMessagesSheet(
@@ -414,12 +473,48 @@ fun BoxedAgentLikeScreen(
 }
 
 @Composable
+private fun AgentConfigRequiredDialog(
+    state: AgentUiState,
+    onDismiss: () -> Unit,
+    onConfigure: () -> Unit,
+    onChooseModel: () -> Unit
+) {
+    val sessionMissing = !state.activeSessionHasConfiguredModel
+    val catalog = state.piConfig.modelCatalog
+    val body = when {
+        catalog.parseError != null -> "models.json 当前解析失败：${catalog.parseError}\n\n请先修复配置后再使用 Agent。"
+        !catalog.hasProvider -> "还没有配置任何 Provider。Agent 需要至少一个 Provider 和一个 Model 才能启动。"
+        !catalog.hasModel -> "models.json 中已存在 Provider，但还没有配置 Model。请添加至少一个 Model。"
+        sessionMissing -> "当前 Session 还没有指定 Provider / Model。请选择 models.json 中的模型后继续。"
+        else -> "需要完成 Provider / Model 配置后才能继续使用 Agent。"
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("需要配置 Agent 模型") },
+        text = { Text(body) },
+        confirmButton = {
+            Button(onClick = if (state.agentConfigReady && sessionMissing) onChooseModel else onConfigure) {
+                Text(if (state.agentConfigReady && sessionMissing) "选择模型" else "去配置 models.json")
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (state.agentConfigReady && sessionMissing) TextButton(onClick = onConfigure) { Text("编辑 models.json") }
+                TextButton(onClick = onDismiss) { Text("稍后") }
+            }
+        },
+        icon = { Icon(Icons.Rounded.Api, contentDescription = null) }
+    )
+}
+
+@Composable
 private fun SideOverlay(
     visible: Boolean,
     fromStart: Boolean,
     title: String,
     subtitle: String,
     onClose: () -> Unit,
+    showHeader: Boolean = true,
     content: @Composable () -> Unit
 ) {
     AnimatedVisibility(
@@ -429,15 +524,17 @@ private fun SideOverlay(
     ) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
             Column(Modifier.fillMaxSize()) {
-                Row(
-                    Modifier.fillMaxWidth().padding(start = 8.dp, end = 14.dp, top = 10.dp, bottom = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    IconButton(onClick = onClose, modifier = Modifier.size(42.dp)) { Icon(Icons.Rounded.Close, contentDescription = "关闭") }
-                    Column(Modifier.weight(1f)) {
-                        Text(title, fontWeight = FontWeight.Black, fontSize = 22.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (showHeader) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(start = 8.dp, end = 14.dp, top = 10.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        IconButton(onClick = onClose, modifier = Modifier.size(42.dp)) { Icon(Icons.Rounded.Close, contentDescription = "关闭") }
+                        Column(Modifier.weight(1f)) {
+                            Text(title, fontWeight = FontWeight.Black, fontSize = 22.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
                     }
                 }
                 Box(Modifier.weight(1f)) { content() }
@@ -485,6 +582,7 @@ private fun ToolsSidePane(
     onOpenTerminal: () -> Unit,
     onLaunchGui: () -> Unit,
     onClose: () -> Unit,
+    onOpenModelsEditor: () -> Unit,
     onInsertComposer: (String) -> Unit
 ) {
     var tab by remember { mutableStateOf(AgentToolTab.Files) }
@@ -503,7 +601,7 @@ private fun ToolsSidePane(
             when (tab) {
                 AgentToolTab.Terminal -> TerminalToolTab(onOpenTerminal)
                 AgentToolTab.Files -> FileBrowserTab(manager, onInsertComposer)
-                AgentToolTab.Pi -> PiSettingsTab(state, manager)
+                AgentToolTab.Pi -> PiSettingsTab(state, manager, initialShowModelsEditor = false, onOpenFullScreenEditor = onOpenModelsEditor)
                 AgentToolTab.Ida -> IdaToolTab(guiState, onLaunchGui, onOpenTerminal, onInsertComposer, onClose)
             }
         }
@@ -1501,6 +1599,7 @@ private fun ChatComposer(
     onShowSendModeMenu: (Boolean) -> Unit,
     state: AgentUiState,
     manager: PiAgentManager,
+    onOpenConfig: () -> Unit,
     onSend: (String?) -> Unit,
     onAbort: () -> Unit
 ) {
@@ -1514,6 +1613,13 @@ private fun ChatComposer(
                     BasicTextField(value = text, onValueChange = onTextChange, textStyle = TextStyle(fontSize = 15.sp, lineHeight = 21.sp, color = MaterialTheme.colorScheme.onSurface), modifier = Modifier.fillMaxWidth())
                 }
             }
+            if (!state.canUseActiveSession) {
+                OutlinedButton(onClick = onOpenConfig, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Rounded.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (!state.agentConfigReady) "先配置 Provider / Model" else "为当前 Session 选择模型")
+                }
+            }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 ComposerIconButton(Icons.Rounded.AutoAwesome, "模型", selected = model != "模型", onClick = { onShowModelMenu(true) })
                 ComposerIconButton(Icons.Rounded.Search, "搜索", onClick = onSearchClick)
@@ -1522,11 +1628,11 @@ private fun ChatComposer(
                 ComposerIconButton(Icons.Rounded.AttachFile, "附件", selected = attachments.isNotEmpty(), onClick = onPickFiles)
                 ComposerIconButton(Icons.Rounded.Add, "更多", onClick = { onShowCompactMenu(true) })
                 if (isWorking && !canSend) FilledIconButton(onClick = onAbort, modifier = Modifier.size(38.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.error)) { Icon(Icons.Rounded.Stop, contentDescription = "中止", modifier = Modifier.size(22.dp)) }
-                else FilledIconButton(onClick = { if (isWorking) onShowSendModeMenu(true) else onSend(null) }, enabled = canSend, modifier = Modifier.size(38.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (canSend) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant, disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .55f))) { Icon(Icons.Rounded.ArrowUpward, contentDescription = "发送", modifier = Modifier.size(22.dp)) }
+                else FilledIconButton(onClick = { if (isWorking) onShowSendModeMenu(true) else onSend(null) }, enabled = canSend && state.canUseActiveSession, modifier = Modifier.size(38.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = if (canSend && state.canUseActiveSession) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (canSend && state.canUseActiveSession) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant, disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .55f))) { Icon(Icons.Rounded.ArrowUpward, contentDescription = "发送", modifier = Modifier.size(22.dp)) }
             }
         }
     }
-    ChatOptionSheets(showThinkingMenu, onShowThinkingMenu, showModelMenu, onShowModelMenu, showCompactMenu, onShowCompactMenu, showSendModeMenu, onShowSendModeMenu, text, onTextChange, autoCompact, state, manager, onSend)
+    ChatOptionSheets(showThinkingMenu, onShowThinkingMenu, showModelMenu, onShowModelMenu, showCompactMenu, onShowCompactMenu, showSendModeMenu, onShowSendModeMenu, text, onTextChange, autoCompact, state, manager, onOpenConfig, onSend)
 }
 
 @Composable
@@ -1550,6 +1656,7 @@ private fun ChatOptionSheets(
     autoCompact: Boolean,
     state: AgentUiState,
     manager: PiAgentManager,
+    onOpenConfig: () -> Unit,
     onSend: (String?) -> Unit
 ) {
     if (showThinkingMenu) ModalBottomSheet(onDismissRequest = { onShowThinkingMenu(false) }) { SheetHeader(Icons.Rounded.Lightbulb, "思考强度", "选择推理强度"); ThinkingLevels.forEach { level -> ListItem(headlineContent = { Text(level) }, supportingContent = { Text(thinkingDescription(level)) }, leadingContent = { if (state.activeSession?.thinkingLevel == level) Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary) else Icon(Icons.Rounded.Settings, contentDescription = null) }, modifier = Modifier.clickable { onShowThinkingMenu(false); manager.chooseThinking(level) }) }; Spacer(Modifier.height(18.dp)) }
@@ -1557,17 +1664,32 @@ private fun ChatOptionSheets(
         var search by remember { mutableStateOf("") }
         var manualProvider by remember { mutableStateOf(state.activeSession?.provider.orEmpty()) }
         var manualModel by remember { mutableStateOf(state.activeSession?.model.orEmpty()) }
-        val models = remember(state.sessionModels, search) { state.sessionModels.filter { "${it.providerNameOrNull().orEmpty()} ${it.id} ${it.name.orEmpty()}".contains(search, ignoreCase = true) }.take(160) }
+        val configuredModels = remember(state.sessionModels, state.piConfig.modelCatalog) { mergeUiModels(state.sessionModels, state.piConfig.modelCatalog.models.map { it.toPiModel() }) }
+        val models = remember(configuredModels, search) { configuredModels.filter { "${it.providerNameOrNull().orEmpty()} ${it.id} ${it.name.orEmpty()}".contains(search, ignoreCase = true) }.take(160) }
         ModalBottomSheet(onDismissRequest = { onShowModelMenu(false) }) {
-            SheetHeader(Icons.Rounded.AutoAwesome, "模型", "切换 provider / model")
+            SheetHeader(Icons.Rounded.AutoAwesome, "模型", "从 models.json 选择/补全 provider 与 model")
             OutlinedTextField(search, { search = it }, leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) }, label = { Text("搜索 provider / model") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp))
             if (state.modelLoading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(18.dp))
             LazyColumn(Modifier.fillMaxWidth().heightIn(max = 330.dp), contentPadding = PaddingValues(vertical = 8.dp)) {
                 items(models, key = { "${it.providerNameOrNull()}/${it.id}" }) { model -> val selected = state.activeSession?.model == model.id && state.activeSession?.provider == model.providerNameOrNull(); ModelPickerRow(model = model, selected = selected, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), onClick = { onShowModelMenu(false); manager.setSessionModel(model) }) }
-                if (!state.modelLoading && models.isEmpty()) item { Text("没有可显示的模型，可手动填写。", Modifier.padding(18.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                if (!state.modelLoading && models.isEmpty()) item { Text("没有可显示的模型，请先配置 models.json。", Modifier.padding(18.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             HorizontalDivider()
-            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Text("手动设置", fontWeight = FontWeight.Bold); OutlinedTextField(manualProvider, { manualProvider = it }, label = { Text("Provider") }, singleLine = true, modifier = Modifier.fillMaxWidth()); OutlinedTextField(manualModel, { manualModel = it }, label = { Text("Model") }, singleLine = true, modifier = Modifier.fillMaxWidth()); Button(onClick = { onShowModelMenu(false); manager.setSessionModelManual(manualProvider, manualModel) }, enabled = manualProvider.isNotBlank() && manualModel.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("应用手动模型") } }
+            ModelManualPickerSection(
+                models = configuredModels,
+                provider = manualProvider,
+                model = manualModel,
+                onProviderChange = { manualProvider = it; if (manualProvider.isBlank()) manualModel = "" },
+                onModelChange = { manualModel = it },
+                onOpenConfig = {
+                    onShowModelMenu(false)
+                    onOpenConfig()
+                },
+                onApply = {
+                    onShowModelMenu(false)
+                    manager.setSessionModelManual(manualProvider, manualModel)
+                }
+            )
         }
     }
     if (showCompactMenu) ModalBottomSheet(onDismissRequest = { onShowCompactMenu(false) }) { SheetHeader(Icons.Rounded.Tune, "Compact / 更多", "上下文与附加操作"); ListItem(headlineContent = { Text("自动 Compact") }, supportingContent = { Text(if (autoCompact) "已开启" else "点击开启") }, leadingContent = { Icon(Icons.Rounded.Settings, contentDescription = null, tint = if (autoCompact) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) }, modifier = Modifier.clickable { onShowCompactMenu(false); manager.setAutoCompaction(true) }); ListItem(headlineContent = { Text("手动 Compact") }, supportingContent = { Text("仅手动触发") }, leadingContent = { Icon(if (!autoCompact) Icons.Rounded.CheckCircle else Icons.Rounded.Settings, contentDescription = null) }, modifier = Modifier.clickable { onShowCompactMenu(false); manager.setAutoCompaction(false) }); ListItem(headlineContent = { Text("立即执行 Compact") }, supportingContent = { Text(if (text.isBlank()) "压缩当前上下文" else "使用输入内容作为要求") }, leadingContent = { Icon(Icons.Rounded.Archive, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }, modifier = Modifier.clickable { onShowCompactMenu(false); manager.compact(text.trim().ifBlank { null }); onTextChange("") }); Spacer(Modifier.height(18.dp)) }
@@ -1592,6 +1714,101 @@ private fun ModelPickerRow(model: PiModel, selected: Boolean, modifier: Modifier
     }
 }
 private fun modelMetaParts(model: PiModel): List<String> = buildList { model.providerNameOrNull()?.let { add(it) }; model.contextWindow?.let { add("${formatTokens(it)} ctx") }; model.maxTokens?.let { add("${formatTokens(it)} max") }; if (model.reasoning == true) add("reasoning"); model.input?.takeIf { it.isNotEmpty() }?.let { add(it.joinToString("/")) } }
+
+@Composable
+private fun ModelManualPickerSection(
+    models: List<PiModel>,
+    provider: String,
+    model: String,
+    onProviderChange: (String) -> Unit,
+    onModelChange: (String) -> Unit,
+    onOpenConfig: () -> Unit,
+    onApply: () -> Unit
+) {
+    val providers = remember(models) { models.mapNotNull { it.providerNameOrNull() }.distinct().sorted() }
+    val providerModels = remember(models, provider) { models.filter { it.providerNameOrNull() == provider }.sortedBy { it.id } }
+    val modelSuggestions = remember(models, provider) { if (provider.isNotBlank()) providerModels else models.sortedWith(compareBy<PiModel> { it.providerNameOrNull().orEmpty() }.thenBy { it.id }) }
+    Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("手动设置 / 补全", fontWeight = FontWeight.Bold)
+        if (models.isEmpty()) {
+            Text("models.json 中还没有可用 Provider/Model。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+            OutlinedButton(onClick = onOpenConfig, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Rounded.Tune, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("打开 models.json 编辑器")
+            }
+        }
+        SuggestionTextField(
+            label = "Provider",
+            value = provider,
+            suggestions = providers,
+            onValueChange = onProviderChange
+        )
+        SuggestionTextField(
+            label = "Model",
+            value = model,
+            suggestions = modelSuggestions.map { it.id }.distinct(),
+            onValueChange = onModelChange,
+            suggestionLabel = { id ->
+                modelSuggestions.firstOrNull { it.id == id }?.let { candidate ->
+                    listOfNotNull(candidate.providerNameOrNull(), candidate.name).joinToString(" · ").ifBlank { id }
+                } ?: id
+            }
+        )
+        Button(onClick = onApply, enabled = provider.isNotBlank() && model.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("应用模型") }
+    }
+}
+
+@Composable
+private fun SuggestionTextField(
+    label: String,
+    value: String,
+    suggestions: List<String>,
+    onValueChange: (String) -> Unit,
+    suggestionLabel: (String) -> String = { it }
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val filtered = remember(value, suggestions) {
+        val query = value.trim()
+        suggestions.filter { query.isBlank() || it.contains(query, ignoreCase = true) || suggestionLabel(it).contains(query, ignoreCase = true) }.take(24)
+    }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = { onValueChange(it); expanded = true },
+            label = { Text(label) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            trailingIcon = {
+                IconButton(onClick = { expanded = true }, enabled = suggestions.isNotEmpty()) {
+                    Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = "选择 $label")
+                }
+            }
+        )
+        if (expanded && filtered.isNotEmpty()) {
+            OutlinedCard(Modifier.fillMaxWidth(), colors = CardDefaults.outlinedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+                Column(Modifier.fillMaxWidth().heightIn(max = 220.dp).verticalScroll(rememberScrollState())) {
+                    filtered.forEach { suggestion ->
+                        ListItem(
+                            headlineContent = { Text(suggestion, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            supportingContent = { suggestionLabel(suggestion).takeIf { it != suggestion }?.let { Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis) } },
+                            modifier = Modifier.clickable { onValueChange(suggestion); expanded = false }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun mergeUiModels(primary: List<PiModel>, fallback: List<PiModel>): List<PiModel> {
+    val seen = linkedSetOf<String>()
+    return (primary + fallback).filter { model ->
+        val key = "${model.providerNameOrNull().orEmpty()}/${model.id}"
+        seen.add(key)
+    }
+}
+
 @Composable private fun TinyMetaChip(text: String, selected: Boolean = false) { val colors = MaterialTheme.colorScheme; Surface(shape = RoundedCornerShape(999.dp), color = if (selected) colors.primary.copy(alpha = .12f) else colors.surfaceContainerHighest, contentColor = if (selected) colors.primary else colors.onSurfaceVariant, border = BorderStroke(1.dp, if (selected) colors.primary.copy(alpha = .28f) else colors.outlineVariant)) { Text(text, Modifier.padding(horizontal = 6.dp, vertical = 2.dp), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) } }
 private fun thinkingDescription(level: String): String = when (level) { "off" -> "关闭扩展思考"; "minimal" -> "最少推理"; "low" -> "低强度思考"; "medium" -> "默认平衡"; "high" -> "更强推理"; "xhigh" -> "超高推理"; else -> "" }
 
@@ -1675,20 +1892,30 @@ private fun FileBrowserTab(manager: PiAgentManager, onInsertComposer: (String) -
 @Composable private fun FileRow(entry: FileEntry, onOpen: () -> Unit, onAttach: () -> Unit, onMore: () -> Unit) { Column(Modifier.fillMaxWidth()) { Row(Modifier.fillMaxWidth().heightIn(min = 42.dp).clickable { onOpen() }.padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) { if (entry.type == "directory") Icon(Icons.Rounded.Folder, contentDescription = null, tint = Color(0xFFD6A433), modifier = Modifier.size(20.dp)) else Icon(Icons.Rounded.Description, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp)); Spacer(Modifier.width(8.dp)); Column(Modifier.weight(1f)) { Text(entry.name, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis); Text("/root/pi_workspace/${entry.path}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, fontFamily = FontFamily.Monospace) }; Text(if (entry.type == "file") formatBytes(entry.size) else "dir", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(76.dp), maxLines = 1); if (entry.type == "file") IconButton(onClick = onAttach, modifier = Modifier.size(34.dp)) { Icon(Icons.Rounded.AttachFile, contentDescription = "附加", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary) } else Spacer(Modifier.width(34.dp)); IconButton(onClick = onMore, modifier = Modifier.size(34.dp)) { Icon(Icons.Rounded.MoreVert, contentDescription = "文件操作", modifier = Modifier.size(18.dp)) } }; HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .65f)) } }
 
 @Composable
-private fun PiSettingsTab(state: AgentUiState, manager: PiAgentManager) {
+private fun PiSettingsTab(
+    state: AgentUiState,
+    manager: PiAgentManager,
+    initialShowModelsEditor: Boolean = false,
+    onOpenFullScreenEditor: (() -> Unit)? = null,
+    onCloseEditor: (() -> Unit)? = null
+) {
     var snapshot by remember { mutableStateOf(manager.getPiConfigSnapshot()) }
-    var showModelsEditor by remember { mutableStateOf(false) }
+    var showModelsEditor by remember(initialShowModelsEditor) { mutableStateOf(initialShowModelsEditor) }
     LaunchedEffect(state.piConfig) { if (!showModelsEditor) snapshot = state.piConfig }
 
     if (showModelsEditor) {
         AgentModelsEditorScreen(
             initialJson = snapshot.modelsText,
-            onBack = { showModelsEditor = false },
+            onBack = {
+                showModelsEditor = false
+                onCloseEditor?.invoke()
+            },
             onApply = { modelsJson ->
-                val next = snapshot.copy(modelsText = modelsJson)
+                val next = snapshot.copy(modelsText = modelsJson, modelCatalog = parseAgentModelCatalog(modelsJson))
                 snapshot = next
                 manager.savePiConfig(next)
                 showModelsEditor = false
+                onCloseEditor?.invoke()
             }
         )
         return
@@ -1697,12 +1924,71 @@ private fun PiSettingsTab(state: AgentUiState, manager: PiAgentManager) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { ElevatedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) { Text("Pi config", fontWeight = FontWeight.Bold); Text("PI_CODING_AGENT_DIR: ${snapshot.materializedDir}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
         item { state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) } }
-        item { SettingsCard("模型与运行参数") { OutlinedTextField(snapshot.defaultProvider, { snapshot = snapshot.copy(defaultProvider = it) }, label = { Text("默认 Provider") }, singleLine = true, modifier = Modifier.fillMaxWidth()); OutlinedTextField(snapshot.defaultModel, { snapshot = snapshot.copy(defaultModel = it) }, label = { Text("默认 Model") }, singleLine = true, modifier = Modifier.fillMaxWidth()); DropdownField("Thinking", snapshot.defaultThinkingLevel, ThinkingLevels) { snapshot = snapshot.copy(defaultThinkingLevel = it) }; OutlinedTextField(snapshot.enabledModels, { snapshot = snapshot.copy(enabledModels = it) }, label = { Text("enabledModels") }, singleLine = true, modifier = Modifier.fillMaxWidth()) } }
-        item { SettingsCard("JSON 配置") { OutlinedButton(onClick = { showModelsEditor = true }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Tune, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("可视化编辑 models.json") }; Text("按 Provider / Compat / Model 分组编辑，保存后会写回 Agent models.json。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp); CodeTextField("环境变量 JSON", snapshot.envText) { snapshot = snapshot.copy(envText = it) }; CodeTextField("models.json", snapshot.modelsText) { snapshot = snapshot.copy(modelsText = it) }; CodeTextField("settings.json", snapshot.settingsText) { snapshot = snapshot.copy(settingsText = it) } } }
+        item { ModelCatalogStatusCard(snapshot.modelCatalog) }
+        item {
+            SettingsCard("模型与运行参数") {
+                DefaultModelPicker(
+                    snapshot = snapshot,
+                    onSnapshotChange = { snapshot = it }
+                )
+                DropdownField("Thinking", snapshot.defaultThinkingLevel, ThinkingLevels) { snapshot = snapshot.copy(defaultThinkingLevel = it) }
+                OutlinedTextField(snapshot.enabledModels, { snapshot = snapshot.copy(enabledModels = it) }, label = { Text("enabledModels") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            }
+        }
+        item { SettingsCard("JSON 配置") { OutlinedButton(onClick = { onOpenFullScreenEditor?.invoke() ?: run { showModelsEditor = true } }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Tune, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("全屏可视化编辑 models.json") }; Text("按 Provider / Compat / Model 分组编辑，保存后会写回 Agent models.json。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp); CodeTextField("环境变量 JSON", snapshot.envText) { snapshot = snapshot.copy(envText = it) }; CodeTextField("models.json", snapshot.modelsText) { value -> snapshot = snapshot.copy(modelsText = value, modelCatalog = parseAgentModelCatalog(value)) }; CodeTextField("settings.json", snapshot.settingsText) { snapshot = snapshot.copy(settingsText = it) } } }
         item { SettingsCard("插件与启动参数") { Text("每行一个传给 pi RPC 进程的额外参数，保存后重启 Session 生效。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp); CodeTextField("extraArgs", snapshot.extraArgsText) { snapshot = snapshot.copy(extraArgsText = it) } } }
         item { SettingsCard("系统提示词追加") { CodeTextField("APPEND_SYSTEM.md", snapshot.appendSystem) { snapshot = snapshot.copy(appendSystem = it) } } }
         item { Button(onClick = { manager.savePiConfig(snapshot) }, modifier = Modifier.fillMaxWidth()) { Text("保存 Pi 配置") } }
     }
+}
+
+@Composable
+private fun ModelCatalogStatusCard(catalog: AgentModelCatalog) {
+    val (message, isError) = when {
+        catalog.parseError != null -> "models.json 解析失败：${catalog.parseError}" to true
+        !catalog.hasProvider -> "尚未配置 Provider。请先编辑 models.json。" to true
+        !catalog.hasModel -> "已配置 ${catalog.providers.size} 个 Provider，但还没有 Model。" to true
+        else -> "已配置 ${catalog.providers.size} 个 Provider / ${catalog.models.size} 个 Model。" to false
+    }
+    OutlinedCard(
+        Modifier.fillMaxWidth(),
+        colors = CardDefaults.outlinedCardColors(containerColor = if (isError) MaterialTheme.colorScheme.errorContainer.copy(alpha = .38f) else MaterialTheme.colorScheme.primaryContainer.copy(alpha = .22f)),
+        border = BorderStroke(1.dp, if (isError) MaterialTheme.colorScheme.error.copy(alpha = .45f) else MaterialTheme.colorScheme.primary.copy(alpha = .24f))
+    ) {
+        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Icon(if (isError) Icons.Rounded.ErrorOutline else Icons.Rounded.CheckCircle, contentDescription = null, tint = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
+            Text(message, modifier = Modifier.weight(1f), color = if (isError) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurface)
+        }
+    }
+}
+
+@Composable
+private fun DefaultModelPicker(snapshot: PiConfigSnapshot, onSnapshotChange: (PiConfigSnapshot) -> Unit) {
+    val models = snapshot.modelCatalog.models
+    val providers = remember(models) { models.map { it.provider }.distinct().sorted() }
+    val providerModels = remember(models, snapshot.defaultProvider) { models.filter { it.provider == snapshot.defaultProvider } }
+    SuggestionTextField(
+        label = "默认 Provider",
+        value = snapshot.defaultProvider,
+        suggestions = providers,
+        onValueChange = { provider ->
+            val firstModel = models.firstOrNull { it.provider == provider }?.id.orEmpty()
+            onSnapshotChange(snapshot.copy(defaultProvider = provider, defaultModel = if (provider == snapshot.defaultProvider) snapshot.defaultModel else firstModel))
+        }
+    )
+    SuggestionTextField(
+        label = "默认 Model",
+        value = snapshot.defaultModel,
+        suggestions = (if (snapshot.defaultProvider.isNotBlank()) providerModels else models).map { it.id }.distinct(),
+        onValueChange = { modelId ->
+            val provider = snapshot.defaultProvider.ifBlank { models.firstOrNull { it.id == modelId }?.provider.orEmpty() }
+            onSnapshotChange(snapshot.copy(defaultProvider = provider, defaultModel = modelId))
+        },
+        suggestionLabel = { modelId ->
+            val candidate = (if (snapshot.defaultProvider.isNotBlank()) providerModels else models).firstOrNull { it.id == modelId }
+            candidate?.let { listOfNotNull(it.provider, it.name).joinToString(" · ").ifBlank { modelId } } ?: modelId
+        }
+    )
 }
 
 @Composable private fun SettingsCard(title: String, content: @Composable ColumnScope.() -> Unit) { ElevatedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { Text(title, fontWeight = FontWeight.Bold); content() } } }

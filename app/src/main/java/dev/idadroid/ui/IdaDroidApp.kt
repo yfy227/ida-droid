@@ -231,7 +231,6 @@ fun IdaDroidApp() {
                     onShowVncLog = { showVncLog = true }
                 )
             } else if (currentScreen == IdaDroidScreen.Agent) {
-                BackHandler { currentScreen = IdaDroidScreen.Home }
                 BoxedAgentLikeScreen(
                     envReady = envState.isReady,
                     guiState = guiState,

@@ -6,6 +6,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -26,6 +27,8 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Gavel
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Info
@@ -77,6 +80,7 @@ fun AboutScreen(onBackClick: () -> Unit) {
     val qqGroupUrl = stringResource(R.string.about_qq_group_url)
     val repositoryUrl = stringResource(R.string.about_repo_url)
     var showLegalDialog by remember { mutableStateOf(false) }
+    var descriptionExpanded by remember { mutableStateOf(false) }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -135,7 +139,11 @@ fun AboutScreen(onBackClick: () -> Unit) {
                     AboutListItem(
                         icon = Icons.Rounded.Description,
                         title = stringResource(R.string.about_description_title),
-                        subtitle = stringResource(R.string.about_description_text)
+                        subtitle = stringResource(R.string.about_description_text),
+                        subtitleMaxLines = if (descriptionExpanded) Int.MAX_VALUE else 2,
+                        trailingIcon = if (descriptionExpanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                        trailingColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        onClick = { descriptionExpanded = !descriptionExpanded }
                     )
 
                     AboutDivider()
@@ -216,8 +224,7 @@ private fun AppPoster() {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(200.dp)
-                .padding(18.dp),
+                .aspectRatio(1920f / 1281f),
             contentAlignment = Alignment.Center
         ) {
             Image(
@@ -238,6 +245,7 @@ private fun AboutListItem(
     modifier: Modifier = Modifier,
     trailingIcon: ImageVector? = null,
     trailingColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    subtitleMaxLines: Int = 2,
     onClick: (() -> Unit)? = null
 ) {
     val rowModifier = if (onClick != null) {
@@ -251,7 +259,7 @@ private fun AboutListItem(
 
     Row(
         modifier = rowModifier
-            .height(72.dp)
+            .heightIn(min = 72.dp)
             .padding(vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -286,7 +294,7 @@ private fun AboutListItem(
                 fontSize = 14.sp,
                 lineHeight = 20.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
+                maxLines = subtitleMaxLines,
                 overflow = TextOverflow.Ellipsis
             )
         }

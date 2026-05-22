@@ -28,19 +28,21 @@ class PiConfigManager(
 
     fun readSnapshot(): PiConfigSnapshot {
         val cfg = readUserConfig()
+        val modelsText = modelsFile.readTextOrDefault("{}\n")
         return PiConfigSnapshot(
             defaultProvider = cfg.defaultProvider.orEmpty(),
             defaultModel = cfg.defaultModel.orEmpty(),
             defaultThinkingLevel = cfg.defaultThinkingLevel ?: "medium",
             enabledModels = cfg.enabledModels.joinToString(", "),
             settingsText = settingsFile.readTextOrDefault(defaultSettingsText()),
-            modelsText = modelsFile.readTextOrDefault("{}\n"),
+            modelsText = modelsText,
             envText = JsonFormats.pretty.encodeToString(cfg.env),
             systemPrompt = "",
             appendSystem = appendSystemFile.readTextOrDefault(defaultAppendSystemPrompt()),
             agentsMd = "",
             extraArgsText = cfg.extraArgs.joinToString("\n"),
-            materializedDir = "/root/pi_workspace/.idadroid/pi-agent"
+            materializedDir = "/root/pi_workspace/.idadroid/pi-agent",
+            modelCatalog = parseAgentModelCatalog(modelsText)
         )
     }
 

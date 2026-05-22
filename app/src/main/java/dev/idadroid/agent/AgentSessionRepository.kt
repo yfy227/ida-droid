@@ -25,13 +25,19 @@ class AgentSessionRepository(
 
     fun activeSessionId(): String? = loadStore().activeSessionId
 
-    fun ensureDefaultSession(): AgentSessionRecord {
+    fun ensureDefaultSession(provider: String? = null, model: String? = null, thinkingLevel: String? = null): AgentSessionRecord {
         val store = loadStore()
         val existing = store.sessions.firstOrNull { it.id == store.activeSessionId } ?: store.sessions.firstOrNull()
         if (existing != null) {
-            if (store.activeSessionId == existing.id) return existing
-            saveStore(store.copy(activeSessionId = existing.id))
-            return existing
+            val patched = existing.copy(
+                provider = existing.provider ?: provider?.trim()?.takeIf { it.isNotBlank() },
+                model = existing.model ?: model?.trim()?.takeIf { it.isNotBlank() },
+                thinkingLevel = existing.thinkingLevel ?: thinkingLevel?.trim()?.takeIf { it.isNotBlank() }
+            )
+            val nextSessions = if (patched == existing) store.sessions else store.sessions.map { if (it.id == existing.id) patched else it }
+            if (store.activeSessionId == existing.id && patched == existing) return existing
+            saveStore(store.copy(sessions = nextSessions, activeSessionId = existing.id))
+            return patched
         }
         val now = Instant.now().toString()
         val session = AgentSessionRecord(
@@ -39,6 +45,9 @@ class AgentSessionRepository(
             name = "默认会话",
             status = "idle",
             cwd = "/root/pi_workspace",
+            provider = provider?.trim()?.takeIf { it.isNotBlank() },
+            model = model?.trim()?.takeIf { it.isNotBlank() },
+            thinkingLevel = thinkingLevel?.trim()?.takeIf { it.isNotBlank() },
             createdAt = now,
             updatedAt = now
         )

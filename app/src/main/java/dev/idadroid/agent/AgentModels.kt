@@ -109,7 +109,8 @@ data class PiConfigSnapshot(
     val appendSystem: String = "",
     val agentsMd: String = "",
     val extraArgsText: String = "",
-    val materializedDir: String = "/root/pi_workspace/.idadroid/pi-agent"
+    val materializedDir: String = "/root/pi_workspace/.idadroid/pi-agent",
+    val modelCatalog: AgentModelCatalog = AgentModelCatalog()
 )
 
 data class QueueState(
@@ -136,8 +137,11 @@ data class AgentUiState(
     val piConfig: PiConfigSnapshot = PiConfigSnapshot()
 ) {
     val activeSession: AgentSessionRecord? get() = sessions.firstOrNull { it.id == activeSessionId }
+    val activeSessionHasConfiguredModel: Boolean get() = activeSession?.let { !it.provider.isNullOrBlank() && !it.model.isNullOrBlank() } == true
+    val agentConfigReady: Boolean get() = piConfig.modelCatalog.isUsable
+    val canUseActiveSession: Boolean get() = agentConfigReady && activeSessionHasConfiguredModel
     val isWorking: Boolean get() = turnActive || status == "working"
-    val canSend: Boolean get() = activeSessionId != null && !isWorking && status != "starting"
+    val canSend: Boolean get() = activeSessionId != null && canUseActiveSession && !isWorking && status != "starting"
 }
 
 sealed interface ChatAttachment {
