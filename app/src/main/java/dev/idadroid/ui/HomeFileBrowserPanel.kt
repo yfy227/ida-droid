@@ -1,10 +1,13 @@
 package dev.idadroid.ui
 
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -43,6 +46,7 @@ import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.NoteAdd
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Upload
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material3.AlertDialog
@@ -74,6 +78,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -83,6 +88,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.graphics.drawable.toBitmap
 import dev.idadroid.files.ContainerFileEntry
 import dev.idadroid.files.ContainerFileManager
 import dev.idadroid.files.RootfsFileSharing
@@ -119,9 +125,16 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
     var showApps by remember { mutableStateOf(false) }
     var apps by remember { mutableStateOf<List<InstalledAppInfo>>(emptyList()) }
     var appsLoading by remember { mutableStateOf(false) }
+    var appSearchQuery by remember { mutableStateOf("") }
 
     val normalizedPath = normalizeContainerFileBrowserPath(path)
     val currentBookmarked = bookmarks.contains(normalizedPath)
+    val filteredApps = remember(apps, appSearchQuery) {
+        val query = appSearchQuery.trim().lowercase()
+        if (query.isBlank()) apps else apps.filter { app ->
+            app.label.lowercase().contains(query) || app.packageName.lowercase().contains(query)
+        }
+    }
 
     fun saveBookmarkList(next: List<String>) {
         val cleaned = next.map { normalizeContainerFileBrowserPath(it) }.distinct().sorted()
@@ -203,15 +216,43 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
             title = { Text("导入本机应用") },
             text = {
                 Column(Modifier.height(460.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = appSearchQuery,
+                        onValueChange = { appSearchQuery = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text("搜索应用名称或包名") },
+                        leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                        trailingIcon = {
+                            if (appSearchQuery.isNotBlank()) {
+                                IconButton(onClick = { appSearchQuery = "" }) {
+                                    Icon(Icons.Rounded.Close, contentDescription = "清空搜索")
+                                }
+                            }
+                        }
+                    )
                     if (appsLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Text(
+                        if (appSearchQuery.isBlank()) "共 ${apps.size} 个应用" else "匹配 ${filteredApps.size} / ${apps.size} 个应用",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp
+                    )
                     androidx.compose.foundation.lazy.LazyColumn(
                         modifier = Modifier.fillMaxWidth().weight(1f),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        items(apps, key = { it.packageName }) { app ->
+                        items(filteredApps, key = { it.packageName }) { app ->
                             OutlinedCard(Modifier.fillMaxWidth()) {
                                 Row(Modifier.fillMaxWidth().padding(10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Icon(Icons.Rounded.Android, contentDescription = null, tint = Color(0xFF2E7D32))
+                                    if (app.icon != null) {
+                                        Image(
+                                            bitmap = app.icon.asImageBitmap(),
+                                            contentDescription = "${app.label} 图标",
+                                            modifier = Modifier.size(40.dp).clip(RoundedCornerShape(10.dp))
+                                        )
+                                    } else {
+                                        Icon(Icons.Rounded.Android, contentDescription = null, tint = Color(0xFF2E7D32), modifier = Modifier.size(40.dp))
+                                    }
                                     Column(Modifier.weight(1f)) {
                                         Text(app.label, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         Text(app.packageName, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -224,6 +265,15 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
                                         }
                                     }) { Text("导入") }
                                 }
+                            }
+                        }
+                        if (!appsLoading && filteredApps.isEmpty()) {
+                            item {
+                                Text(
+                                    if (appSearchQuery.isBlank()) "没有可导入的 APK 应用" else "没有匹配“$appSearchQuery”的应用",
+                                    Modifier.padding(16.dp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                     }
@@ -256,6 +306,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
             OutlinedButton(
                 onClick = {
                     showApps = true
+                    appSearchQuery = ""
                     scope.launch {
                         appsLoading = true
                         apps = withContext(Dispatchers.IO) { loadInstalledApps(context) }
@@ -500,25 +551,35 @@ private fun isSafeContainerFileName(name: String): Boolean = name.isNotBlank() &
 private data class InstalledAppInfo(
     val label: String,
     val packageName: String,
-    val sourceDir: String
+    val sourceDir: String,
+    val icon: Bitmap?,
+    val isSystem: Boolean
 )
 
 private fun loadInstalledApps(context: android.content.Context): List<InstalledAppInfo> {
     val pm = context.packageManager
+    val iconSizePx = (48 * context.resources.displayMetrics.density).toInt().coerceAtLeast(48)
     @Suppress("DEPRECATION")
     return pm.getInstalledApplications(0)
         .asSequence()
         .filter { it.sourceDir?.endsWith(".apk", ignoreCase = true) == true }
-        .sortedWith(compareBy<ApplicationInfo> { (it.flags and ApplicationInfo.FLAG_SYSTEM) != 0 }.thenBy { it.loadLabel(pm).toString().lowercase() })
-        .map {
+        .map { appInfo ->
+            val label = appInfo.loadLabel(pm).toString().ifBlank { appInfo.packageName }
             InstalledAppInfo(
-                label = it.loadLabel(pm).toString().ifBlank { it.packageName },
-                packageName = it.packageName,
-                sourceDir = it.sourceDir
+                label = label,
+                packageName = appInfo.packageName,
+                sourceDir = appInfo.sourceDir,
+                icon = loadAppIconBitmap(pm, appInfo, iconSizePx),
+                isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
             )
         }
+        .sortedWith(compareBy<InstalledAppInfo> { it.isSystem }.thenBy { it.label.lowercase() })
         .toList()
 }
+
+private fun loadAppIconBitmap(pm: PackageManager, appInfo: ApplicationInfo, sizePx: Int): Bitmap? = runCatching {
+    appInfo.loadIcon(pm).toBitmap(width = sizePx, height = sizePx, config = Bitmap.Config.ARGB_8888)
+}.getOrNull()
 
 private fun formatBytes(value: Long): String = when {
     value >= 1024L * 1024L * 1024L -> "%.1f GiB".format(value / 1024.0 / 1024.0 / 1024.0)
