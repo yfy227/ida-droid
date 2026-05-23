@@ -1,8 +1,34 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
 }
+
+val localProperties = Properties().apply {
+    val localPropertiesFile = rootProject.file("local.properties")
+    if (localPropertiesFile.isFile) {
+        localPropertiesFile.inputStream().use { load(it) }
+    }
+}
+
+fun localOrGradleProperty(name: String): String? =
+    (providers.gradleProperty(name).orNull
+        ?: localProperties.getProperty(name)
+        ?: providers.environmentVariable(name).orNull)
+        ?.takeIf { it.isNotBlank() }
+
+val releaseStoreFile = localOrGradleProperty("IDADROID_RELEASE_STORE_FILE")
+val releaseStorePassword = localOrGradleProperty("IDADROID_RELEASE_STORE_PASSWORD")
+val releaseKeyAlias = localOrGradleProperty("IDADROID_RELEASE_KEY_ALIAS")
+val releaseKeyPassword = localOrGradleProperty("IDADROID_RELEASE_KEY_PASSWORD")
+val releaseSigningConfigured = listOf(
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() }
 
 android {
     namespace = "dev.idadroid"
@@ -21,6 +47,25 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (releaseSigningConfigured) {
+            create("release") {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            if (releaseSigningConfigured) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true
@@ -33,6 +78,12 @@ android {
 
     kotlin {
         jvmToolchain(17)
+    }
+
+    lint {
+        // targetSdk intentionally stays at 28 so bundled proot can execute from
+        // the app-private writable data directory on Android 10+.
+        disable += "ExpiredTargetSdkVersion"
     }
 
     packaging {
