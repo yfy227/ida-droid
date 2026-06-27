@@ -76,7 +76,7 @@ import androidx.compose.material.icons.rounded.FileDownload
 import androidx.compose.material.icons.rounded.FileUpload
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FolderOpen
-import androidx.compose.material.icons.rounded.FormatListBulleted
+import androidx.compose.material.icons.automirrored.rounded.FormatListBulleted
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
@@ -85,7 +85,7 @@ import androidx.compose.material.icons.rounded.KeyboardDoubleArrowUp
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MoreVert
-import androidx.compose.material.icons.rounded.NoteAdd
+import androidx.compose.material.icons.automirrored.rounded.NoteAdd
 import androidx.compose.material.icons.rounded.OpenInFull
 import androidx.compose.material.icons.rounded.Paid
 import androidx.compose.material.icons.rounded.Person
@@ -94,12 +94,12 @@ import androidx.compose.material.icons.rounded.Queue
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SaveAlt
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.Send
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Terminal
-import androidx.compose.material.icons.rounded.TextSnippet
+import androidx.compose.material.icons.automirrored.rounded.TextSnippet
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Upload
 import androidx.compose.material.icons.rounded.Visibility
@@ -134,7 +134,7 @@ import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -964,7 +964,7 @@ private fun WorkspaceFileRow(
                         DropdownMenuItem(
                             text = { Text("插入到输入框") },
                             onClick = { showMenu = false; onInsertText() },
-                            leadingIcon = { Icon(Icons.Rounded.TextSnippet, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                            leadingIcon = { Icon(Icons.AutoMirrored.Rounded.TextSnippet, contentDescription = null, modifier = Modifier.size(18.dp)) }
                         )
                         DropdownMenuItem(
                             text = { Text("作为附件发送") },
@@ -999,7 +999,7 @@ private fun ToolsSidePane(
 ) {
     var tab by remember { mutableStateOf(AgentToolTab.Files) }
     Column(Modifier.fillMaxSize()) {
-        TabRow(selectedTabIndex = tab.ordinal) {
+        PrimaryTabRow(selectedTabIndex = tab.ordinal) {
             AgentToolTab.entries.forEach { t ->
                 Tab(
                     selected = tab == t,
@@ -1086,7 +1086,7 @@ private fun EmptyAgentTopBar(onSessions: () -> Unit, onTools: () -> Unit, onWork
                 )
             }
         }
-        IconButton(onClick = onTools) { Icon(Icons.Rounded.FormatListBulleted, contentDescription = "Tools") }
+        IconButton(onClick = onTools) { Icon(Icons.AutoMirrored.Rounded.FormatListBulleted, contentDescription = "Tools") }
     }
 }
 
@@ -1149,7 +1149,7 @@ private fun ChatTopBar(
                     )
                 }
             }
-            IconButton(onClick = onTools, modifier = Modifier.size(38.dp)) { Icon(Icons.Rounded.FormatListBulleted, contentDescription = "Tools", modifier = Modifier.size(28.dp), tint = colors.onSurfaceVariant) }
+            IconButton(onClick = onTools, modifier = Modifier.size(38.dp)) { Icon(Icons.AutoMirrored.Rounded.FormatListBulleted, contentDescription = "Tools", modifier = Modifier.size(28.dp), tint = colors.onSurfaceVariant) }
             IconButton(onClick = onRefresh, modifier = Modifier.size(38.dp)) { Icon(Icons.Rounded.Refresh, contentDescription = "刷新", modifier = Modifier.size(28.dp), tint = colors.onSurfaceVariant) }
         }
         TopStatsLine(stats, autoCompact, Modifier.fillMaxWidth().padding(start = 48.dp, end = 2.dp))
@@ -1765,7 +1765,7 @@ private fun toolKindAccent(kind: ToolKind): Color = when (kind) {
 private fun toolIcon(kind: ToolKind): ImageVector = when (kind) {
     ToolKind.Read -> Icons.Rounded.Visibility
     ToolKind.Edit -> Icons.Rounded.Edit
-    ToolKind.Write -> Icons.Rounded.NoteAdd
+    ToolKind.Write -> Icons.AutoMirrored.Rounded.NoteAdd
     ToolKind.Bash -> Icons.Rounded.Terminal
     ToolKind.Ls -> Icons.Rounded.Folder
     ToolKind.Grep -> Icons.Rounded.Search
@@ -2314,7 +2314,7 @@ private fun ChatOptionSheets(
         }
     }
     if (showCompactMenu) ModalBottomSheet(onDismissRequest = { onShowCompactMenu(false) }) { SheetHeader(Icons.Rounded.Tune, "Compact / 更多", "上下文与附加操作"); ListItem(headlineContent = { Text("自动 Compact") }, supportingContent = { Text(if (autoCompact) "已开启" else "点击开启") }, leadingContent = { Icon(Icons.Rounded.Settings, contentDescription = null, tint = if (autoCompact) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) }, modifier = Modifier.clickable { onShowCompactMenu(false); manager.setAutoCompaction(true) }); ListItem(headlineContent = { Text("手动 Compact") }, supportingContent = { Text("仅手动触发") }, leadingContent = { Icon(if (!autoCompact) Icons.Rounded.CheckCircle else Icons.Rounded.Settings, contentDescription = null) }, modifier = Modifier.clickable { onShowCompactMenu(false); manager.setAutoCompaction(false) }); ListItem(headlineContent = { Text("立即执行 Compact") }, supportingContent = { Text(if (text.isBlank()) "压缩当前上下文" else "使用输入内容作为要求") }, leadingContent = { Icon(Icons.Rounded.Archive, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }, modifier = Modifier.clickable { onShowCompactMenu(false); manager.compact(text.trim().ifBlank { null }); onTextChange("") }); Spacer(Modifier.height(18.dp)) }
-    if (showSendModeMenu) ModalBottomSheet(onDismissRequest = { onShowSendModeMenu(false) }) { SheetHeader(Icons.Rounded.Send, "发送方式", "选择队列策略"); ListItem(headlineContent = { Text("立即发送") }, supportingContent = { Text("中断当前 turn") }, leadingContent = { Icon(Icons.Rounded.FlashOn, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }, modifier = Modifier.clickable { onShowSendModeMenu(false); onSend(null) }); ListItem(headlineContent = { Text("Steer 队列") }, supportingContent = { Text("注入当前 turn") }, leadingContent = { Icon(Icons.Rounded.Send, contentDescription = null) }, modifier = Modifier.clickable { onShowSendModeMenu(false); onSend("steer") }); ListItem(headlineContent = { Text("Follow-up 队列") }, supportingContent = { Text("完成后发送") }, leadingContent = { Icon(Icons.Rounded.Queue, contentDescription = null) }, modifier = Modifier.clickable { onShowSendModeMenu(false); onSend("followUp") }); Spacer(Modifier.height(18.dp)) }
+    if (showSendModeMenu) ModalBottomSheet(onDismissRequest = { onShowSendModeMenu(false) }) { SheetHeader(Icons.AutoMirrored.Rounded.Send, "发送方式", "选择队列策略"); ListItem(headlineContent = { Text("立即发送") }, supportingContent = { Text("中断当前 turn") }, leadingContent = { Icon(Icons.Rounded.FlashOn, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }, modifier = Modifier.clickable { onShowSendModeMenu(false); onSend(null) }); ListItem(headlineContent = { Text("Steer 队列") }, supportingContent = { Text("注入当前 turn") }, leadingContent = { Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = null) }, modifier = Modifier.clickable { onShowSendModeMenu(false); onSend("steer") }); ListItem(headlineContent = { Text("Follow-up 队列") }, supportingContent = { Text("完成后发送") }, leadingContent = { Icon(Icons.Rounded.Queue, contentDescription = null) }, modifier = Modifier.clickable { onShowSendModeMenu(false); onSend("followUp") }); Spacer(Modifier.height(18.dp)) }
 }
 
 @Composable
@@ -2467,9 +2467,9 @@ private fun SessionRow(session: AgentSessionRecord, active: Boolean, onSelect: (
 private fun ToolsSheet(state: AgentUiState, guiState: GuiSessionState, manager: PiAgentManager, onDismiss: () -> Unit, onOpenTerminal: () -> Unit, onLaunchGui: () -> Unit, onInsertComposer: (String) -> Unit) {
     var tab by remember { mutableStateOf(AgentToolTab.Files) }
     ModalBottomSheet(onDismissRequest = onDismiss) {
-        SheetHeader(Icons.Rounded.FormatListBulleted, "Tools", "Terminal、Files、Pi、IDA")
+        SheetHeader(Icons.AutoMirrored.Rounded.FormatListBulleted, "Tools", "Terminal、Files、Pi、IDA")
         Column(Modifier.fillMaxWidth().heightIn(max = 720.dp)) {
-            TabRow(selectedTabIndex = tab.ordinal) { AgentToolTab.entries.forEach { t -> Tab(selected = tab == t, onClick = { tab = t }, icon = { Icon(when (t) { AgentToolTab.Terminal -> Icons.Rounded.Terminal; AgentToolTab.Files -> Icons.Rounded.Folder; AgentToolTab.Pi -> Icons.Rounded.Settings; AgentToolTab.Ida -> Icons.Rounded.Code }, contentDescription = null) }, text = { Text(when (t) { AgentToolTab.Terminal -> "Terminal"; AgentToolTab.Files -> "Files"; AgentToolTab.Pi -> "Pi"; AgentToolTab.Ida -> "IDA" }) }) } }
+            PrimaryTabRow(selectedTabIndex = tab.ordinal) { AgentToolTab.entries.forEach { t -> Tab(selected = tab == t, onClick = { tab = t }, icon = { Icon(when (t) { AgentToolTab.Terminal -> Icons.Rounded.Terminal; AgentToolTab.Files -> Icons.Rounded.Folder; AgentToolTab.Pi -> Icons.Rounded.Settings; AgentToolTab.Ida -> Icons.Rounded.Code }, contentDescription = null) }, text = { Text(when (t) { AgentToolTab.Terminal -> "Terminal"; AgentToolTab.Files -> "Files"; AgentToolTab.Pi -> "Pi"; AgentToolTab.Ida -> "IDA" }) }) } }
             Box(Modifier.fillMaxWidth().heightIn(min = 520.dp, max = 640.dp)) { when (tab) { AgentToolTab.Terminal -> TerminalToolTab(onOpenTerminal); AgentToolTab.Files -> FileBrowserTab(manager, onInsertComposer); AgentToolTab.Pi -> PiSettingsTab(state, manager); AgentToolTab.Ida -> IdaToolTab(guiState, onLaunchGui, onOpenTerminal, onInsertComposer, onDismiss) } }
         }
     }
@@ -2499,9 +2499,9 @@ private fun FileBrowserTab(manager: PiAgentManager, onInsertComposer: (String) -
     fun openFile(entry: FileEntry) { if (entry.type != "file") return; scope.launch { error = null; runCatching { manager.fileForSharing(entry.path) }.onSuccess { file -> runCatching { RootfsFileSharing.openFile(context, file) }.onFailure { error = "打开失败：${it.message}" } }.onFailure { error = "打开失败：${it.message}" } } }
     fun saveAs(entry: FileEntry) { if (entry.type != "file") return; saveAsEntry = entry; saveAsLauncher.launch(entry.name) }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) { FilledTonalIconButton(onClick = { path = parentPath(path) }, modifier = Modifier.size(36.dp)) { Icon(Icons.Rounded.ArrowUpward, contentDescription = "上级", modifier = Modifier.size(19.dp)) }; FilledTonalIconButton(onClick = { reload() }, modifier = Modifier.size(36.dp)) { Icon(Icons.Rounded.Refresh, contentDescription = "刷新", modifier = Modifier.size(19.dp)) }; FilledTonalButton(onClick = { pickUpload.launch(arrayOf("*/*")) }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Icon(Icons.Rounded.Upload, contentDescription = null, modifier = Modifier.size(17.dp)); Spacer(Modifier.width(4.dp)); Text("上传", fontSize = 13.sp) }; OutlinedButton(onClick = { createKind = "file"; createName = "" }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Icon(Icons.Rounded.NoteAdd, contentDescription = null, modifier = Modifier.size(17.dp)); Spacer(Modifier.width(4.dp)); Text("文件", fontSize = 13.sp) }; OutlinedButton(onClick = { createKind = "dir"; createName = "" }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Icon(Icons.Rounded.CreateNewFolder, contentDescription = null, modifier = Modifier.size(17.dp)); Spacer(Modifier.width(4.dp)); Text("目录", fontSize = 13.sp) } }
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) { FilledTonalIconButton(onClick = { path = parentPath(path) }, modifier = Modifier.size(36.dp)) { Icon(Icons.Rounded.ArrowUpward, contentDescription = "上级", modifier = Modifier.size(19.dp)) }; FilledTonalIconButton(onClick = { reload() }, modifier = Modifier.size(36.dp)) { Icon(Icons.Rounded.Refresh, contentDescription = "刷新", modifier = Modifier.size(19.dp)) }; FilledTonalButton(onClick = { pickUpload.launch(arrayOf("*/*")) }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Icon(Icons.Rounded.Upload, contentDescription = null, modifier = Modifier.size(17.dp)); Spacer(Modifier.width(4.dp)); Text("上传", fontSize = 13.sp) }; OutlinedButton(onClick = { createKind = "file"; createName = "" }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Icon(Icons.AutoMirrored.Rounded.NoteAdd, contentDescription = null, modifier = Modifier.size(17.dp)); Spacer(Modifier.width(4.dp)); Text("文件", fontSize = 13.sp) }; OutlinedButton(onClick = { createKind = "dir"; createName = "" }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Icon(Icons.Rounded.CreateNewFolder, contentDescription = null, modifier = Modifier.size(17.dp)); Spacer(Modifier.width(4.dp)); Text("目录", fontSize = 13.sp) } }
         Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surfaceContainerHighest, shape = RoundedCornerShape(10.dp)) { Row(Modifier.padding(horizontal = 10.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) { Icon(Icons.Rounded.FolderOpen, contentDescription = null, modifier = Modifier.size(17.dp), tint = MaterialTheme.colorScheme.primary); BasicTextField(value = path, onValueChange = { path = it.ifBlank { "." } }, singleLine = true, textStyle = TextStyle(fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface, fontFamily = FontFamily.Monospace), modifier = Modifier.weight(1f)) } }
-        createKind?.let { kind -> Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(10.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) { Row(Modifier.padding(8.dp), horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) { Icon(if (kind == "dir") Icons.Rounded.CreateNewFolder else Icons.Rounded.NoteAdd, contentDescription = null, tint = MaterialTheme.colorScheme.primary); OutlinedTextField(createName, { createName = it }, label = { Text(if (kind == "dir") "目录名" else "文件名") }, singleLine = true, modifier = Modifier.weight(1f)); TextButton(onClick = { createKind = null; createName = "" }) { Text("取消") }; Button(onClick = { val name = createName.trim(); if (!isSafeFileName(name)) { error = "名称不能包含 /、\\ 或 .."; return@Button }; scope.launch { if (kind == "dir") manager.mkdir(if (path == ".") name else "$path/$name") else manager.uploadFile(path, DraftAttachment(name, "text/plain", ByteArray(0), false)); createKind = null; createName = ""; reload() } }, enabled = createName.isNotBlank()) { Text("创建") } } } }
+        createKind?.let { kind -> Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(10.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) { Row(Modifier.padding(8.dp), horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) { Icon(if (kind == "dir") Icons.Rounded.CreateNewFolder else Icons.AutoMirrored.Rounded.NoteAdd, contentDescription = null, tint = MaterialTheme.colorScheme.primary); OutlinedTextField(createName, { createName = it }, label = { Text(if (kind == "dir") "目录名" else "文件名") }, singleLine = true, modifier = Modifier.weight(1f)); TextButton(onClick = { createKind = null; createName = "" }) { Text("取消") }; Button(onClick = { val name = createName.trim(); if (!isSafeFileName(name)) { error = "名称不能包含 /、\\ 或 .."; return@Button }; scope.launch { if (kind == "dir") manager.mkdir(if (path == ".") name else "$path/$name") else manager.uploadFile(path, DraftAttachment(name, "text/plain", ByteArray(0), false)); createKind = null; createName = ""; reload() } }, enabled = createName.isNotBlank()) { Text("创建") } } } }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surfaceContainerLowest, shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) { LazyColumn(Modifier.fillMaxSize()) { item { FileHeaderRow() }; items(entries.sortedWith(compareBy<FileEntry> { it.type != "directory" }.thenBy { it.name.lowercase() }), key = { it.path }) { entry -> FileRow(entry, onOpen = { if (entry.type == "directory") path = entry.path else openFile(entry) }, onAttach = { onInsertComposer(manager.fileRef(manager.workspaceAbsPath(entry.path))) }, onMore = { actionEntry = entry }) }; if (!loading && entries.isEmpty()) item { Text("空目录", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) } } }

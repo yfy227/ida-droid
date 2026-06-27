@@ -4,6 +4,7 @@ import android.content.Context
 import android.system.Os
 import dev.idadroid.env.EnvironmentPaths
 import dev.idadroid.proot.IdaProotRuntime
+import dev.idadroid.util.safePid
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -253,8 +254,6 @@ class IdaMcpSessionManager(
     private fun logFile(): File = File(paths.logsDir, "ida-mcp-http.log")
 
     @Volatile private var activeProcess: Process? = null
-
-    private fun Process?.safePid(): Int? = this?.runCatching { pid() }?.getOrNull()?.takeIf { it > 0 }
 
     companion object {
         private val startStopMutex = Mutex()

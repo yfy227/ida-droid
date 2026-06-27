@@ -44,7 +44,7 @@ import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.MoreVert
-import androidx.compose.material.icons.rounded.NoteAdd
+import androidx.compose.material.icons.automirrored.rounded.NoteAdd
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Upload
@@ -320,7 +320,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
                 Text("应用", fontSize = 13.sp)
             }
             OutlinedButton(onClick = { createKind = "file"; createName = "" }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
-                Icon(Icons.Rounded.NoteAdd, contentDescription = null, modifier = Modifier.size(17.dp))
+                Icon(Icons.AutoMirrored.Rounded.NoteAdd, contentDescription = null, modifier = Modifier.size(17.dp))
                 Spacer(Modifier.width(4.dp))
                 Text("文件", fontSize = 13.sp)
             }
@@ -354,7 +354,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
         createKind?.let { kind ->
             Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(10.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
                 Row(Modifier.padding(8.dp), horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(if (kind == "dir") Icons.Rounded.CreateNewFolder else Icons.Rounded.NoteAdd, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Icon(if (kind == "dir") Icons.Rounded.CreateNewFolder else Icons.AutoMirrored.Rounded.NoteAdd, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                     OutlinedTextField(createName, { createName = it }, label = { Text(if (kind == "dir") "目录名" else "文件名") }, singleLine = true, modifier = Modifier.weight(1f))
                     TextButton(onClick = { createKind = null; createName = "" }) { Text("取消") }
                     Button(onClick = {

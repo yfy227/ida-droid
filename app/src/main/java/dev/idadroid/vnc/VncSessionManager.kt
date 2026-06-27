@@ -9,6 +9,7 @@ import dev.idadroid.env.EnvironmentPaths
 import dev.idadroid.proot.IdaProotRuntime
 import dev.idadroid.settings.IdaDroidSettings
 import dev.idadroid.settings.VncSettings
+import dev.idadroid.util.safePid
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -438,8 +439,6 @@ class VncSessionManager(
     private fun supervisorLogFile(): File = File(paths.logsDir, "ida-vnc-supervisor.log")
 
     @Volatile private var activeProcess: Process? = null
-
-    private fun Process?.safePid(): Int? = this?.runCatching { pid() }?.getOrNull()?.takeIf { it > 0 }
 
     companion object {
         private const val AVNC_PACKAGE = "com.gaurav.avnc"

@@ -16,7 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -160,7 +160,7 @@ fun SettingsScreen(
                 SettingsItem(
                     title = "终端启动日志",
                     subtitle = "查看 proot 终端启动命令、pid、exit code 和错误信息。",
-                    icon = Icons.Default.OpenInNew,
+                    icon = Icons.AutoMirrored.Filled.OpenInNew,
                     onClick = onShowTerminalLog
                 )
             }
@@ -168,7 +168,7 @@ fun SettingsScreen(
                 SettingsItem(
                     title = "IDA GUI / VNC 日志",
                     subtitle = "查看 VNC/IDA 启动脚本输出。",
-                    icon = Icons.Default.OpenInNew,
+                    icon = Icons.AutoMirrored.Filled.OpenInNew,
                     onClick = onShowVncLog
                 )
             }
@@ -179,7 +179,7 @@ fun SettingsScreen(
                 SettingsItem(
                     title = "打开 AVNC",
                     subtitle = "当前阶段通过 vnc:// 调起 AVNC；AVNC 内的手势、键盘、缩放设置沿用其实现。",
-                    icon = Icons.Default.OpenInNew,
+                    icon = Icons.AutoMirrored.Filled.OpenInNew,
                     onClick = { openAvnc(context) }
                 )
             }
