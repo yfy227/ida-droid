@@ -559,7 +559,18 @@ class PiAgentManager(
         val runtime = PiRpcRuntime(appContext, session, events, paths)
         runtimes[sessionId] = runtime
         scope.launch(Dispatchers.Main.immediate) {
-            events.collect { event -> handleRuntimeEvent(sessionId, event) }
+            events.collect { event ->
+                try {
+                    handleRuntimeEvent(sessionId, event)
+                } catch (e: Exception) {
+                    // A single failing event must NOT kill the collector —
+                    // otherwise all subsequent streaming events (text deltas,
+                    // turn_end, RPC responses) are silently dropped and the
+                    // user sees "sent but no reply" indefinitely.
+                    android.util.Log.e("PiAgentManager", "handleRuntimeEvent failed for $sessionId", e)
+                    _state.update { it.copy(activity = "事件处理异常：${e.message}") }
+                }
+            }
         }
         runtime.start()
         runtime
@@ -571,6 +582,14 @@ class PiAgentManager(
     }
 
     private suspend fun refreshRuntimeState(sessionId: String) {
+        try {
+            refreshRuntimeStateInternal(sessionId)
+        } catch (e: Exception) {
+            android.util.Log.e("PiAgentManager", "refreshRuntimeState failed for $sessionId", e)
+        }
+    }
+
+    private suspend fun refreshRuntimeStateInternal(sessionId: String) {
         val runtime = runtimes[sessionId]?.takeIf { it.isActive() } ?: run {
             refresh()
             return

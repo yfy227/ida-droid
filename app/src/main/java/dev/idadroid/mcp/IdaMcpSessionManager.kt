@@ -2,6 +2,7 @@ package dev.idadroid.mcp
 
 import android.content.Context
 import android.system.Os
+import android.util.Log
 import dev.idadroid.env.EnvironmentPaths
 import dev.idadroid.proot.IdaProotRuntime
 import dev.idadroid.util.safePid
@@ -24,6 +25,11 @@ class IdaMcpSessionManager(
 ) {
     private val appContext = context.applicationContext
     private val runtime = IdaProotRuntime(appContext, paths = paths)
+    private val fileTransferManager = FileTransferManager(appContext, paths)
+    private val fileTransferServer = FileTransferHttpServer(fileTransferManager)
+
+    /** Exposed so the UI can trigger host→container file transfers. */
+    val transfers: FileTransferManager get() = fileTransferManager
 
     private val _state = MutableStateFlow(
         IdaMcpSessionState(
@@ -99,6 +105,10 @@ class IdaMcpSessionManager(
 
                     val running = runningState(launchSettings, "IDA MCP HTTP 已启动：${launchSettings.endpoint}")
                     _state.value = running
+                    // Start the file-transfer HTTP bridge so the agent inside the
+                    // container can discover and open host-transferred files.
+                    runCatching { fileTransferServer.start() }
+                        .onFailure { Log.w("IdaMcpSessionManager", "file transfer server failed to start", it) }
                     running
                 }.onFailure { error ->
                     if (_state.value.status == IdaMcpStatus.Starting) {
@@ -120,6 +130,7 @@ class IdaMcpSessionManager(
         try {
             return withContext(Dispatchers.IO) {
                 runCatching {
+                    fileTransferServer.stop()
                     val settings = _state.value.settings
                     activeProcess?.let { process ->
                         if (process.isAlive) {

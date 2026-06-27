@@ -92,6 +92,7 @@ import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.Queue
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.SaveAlt
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.automirrored.rounded.Send
@@ -2545,7 +2546,8 @@ private fun PiSettingsTab(
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { ElevatedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) { Text("Pi config", fontWeight = FontWeight.Bold); Text("PI_CODING_AGENT_DIR: ${snapshot.materializedDir}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
         item { state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) } }
-        item { ModelCatalogStatusCard(snapshot.modelCatalog) }
+        // ── Visual AI config editor (replaces raw JSON editing) ──
+        item { AiConfigEditor(snapshot = snapshot, onSnapshotChange = { snapshot = it }) }
         item {
             SettingsCard("模型与运行参数") {
                 DefaultModelPicker(
@@ -2556,10 +2558,10 @@ private fun PiSettingsTab(
                 OutlinedTextField(snapshot.enabledModels, { snapshot = snapshot.copy(enabledModels = it) }, label = { Text("enabledModels") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             }
         }
-        item { SettingsCard("JSON 配置") { OutlinedButton(onClick = { onOpenFullScreenEditor?.invoke() ?: run { showModelsEditor = true } }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Tune, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("全屏可视化编辑 models.json") }; Text("按 Provider / Compat / Model 分组编辑，保存后会写回 Agent models.json。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp); CodeTextField("环境变量 JSON", snapshot.envText) { snapshot = snapshot.copy(envText = it) }; CodeTextField("models.json", snapshot.modelsText) { value -> snapshot = snapshot.copy(modelsText = value, modelCatalog = parseAgentModelCatalog(value)) }; CodeTextField("settings.json", snapshot.settingsText) { snapshot = snapshot.copy(settingsText = it) } } }
+        item { SettingsCard("settings.json") { CodeTextField("settings.json", snapshot.settingsText) { snapshot = snapshot.copy(settingsText = it) } } }
         item { SettingsCard("插件与启动参数") { Text("每行一个传给 pi RPC 进程的额外参数，保存后重启 Session 生效。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp); CodeTextField("extraArgs", snapshot.extraArgsText) { snapshot = snapshot.copy(extraArgsText = it) } } }
         item { SettingsCard("系统提示词追加") { CodeTextField("APPEND_SYSTEM.md", snapshot.appendSystem) { snapshot = snapshot.copy(appendSystem = it) } } }
-        item { Button(onClick = { manager.savePiConfig(snapshot) }, modifier = Modifier.fillMaxWidth()) { Text("保存 Pi 配置") } }
+        item { Button(onClick = { manager.savePiConfig(snapshot) }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Save, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("保存 Pi 配置") } }
     }
 }
 
