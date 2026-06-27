@@ -36,6 +36,7 @@ class PiAgentManager(
     private val configManager = PiConfigManager(paths)
     private val attachmentManager = AttachmentManager(appContext, paths)
     val workspaceManager = WorkspaceManager(appContext, paths)
+    private val deepIndexToolChain = dev.idadroid.deepindex.DeepIndexToolChain(appContext, paths)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false; isLenient = true }
     private val runtimes = mutableMapOf<String, PiRpcRuntime>()
@@ -455,6 +456,20 @@ class PiAgentManager(
                 .onFailure { error -> setError("保存 Pi 配置失败：${error.message}") }
         }
     }
+
+    // ==================== Deep Index Mode ====================
+
+    fun enableDeepIndexMode() {
+        deepIndexToolChain.setEnabled(true)
+        _state.update { it.copy(activity = "深度索引模式已开启：deep-index 工具链已就绪，agent 将使用 CodeGraph + ECC + Memory 联动分析") }
+    }
+
+    fun disableDeepIndexMode() {
+        deepIndexToolChain.setEnabled(false)
+        _state.update { it.copy(activity = "深度索引模式已关闭") }
+    }
+
+    fun isDeepIndexEnabled(): Boolean = deepIndexToolChain.isEnabled()
 
     suspend fun listFiles(path: String): List<FileEntry> = withContext(Dispatchers.IO) {
         val dir = workspaceFile(path)

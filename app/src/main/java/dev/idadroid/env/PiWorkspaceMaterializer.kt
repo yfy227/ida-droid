@@ -1,6 +1,7 @@
 package dev.idadroid.env
 
 import android.system.Os
+import dev.idadroid.deepindex.DeepIndexScriptBuilder
 import java.io.File
 
 class PiWorkspaceMaterializer {
@@ -14,8 +15,9 @@ class PiWorkspaceMaterializer {
         val piAgentDir = File(idaDroidDir, "pi-agent")
         val logsDir = File(idaDroidDir, "logs")
         val scriptsDir = File(idaDroidDir, "scripts")
+        val deepIndexDir = File(idaDroidDir, "deep-index")
 
-        listOf(workspace, uploadDir, transferDir, sessionDir, piDir, idaDroidDir, piAgentDir, logsDir, scriptsDir).forEach { it.mkdirs() }
+        listOf(workspace, uploadDir, transferDir, sessionDir, piDir, idaDroidDir, piAgentDir, logsDir, scriptsDir, deepIndexDir).forEach { it.mkdirs() }
 
         File(piDir, "APPEND_SYSTEM.md").writeTextIfMissing(appendSystemPrompt())
         File(piAgentDir, "settings.json").writeTextIfMissing(defaultPiSettings())
@@ -23,11 +25,13 @@ class PiWorkspaceMaterializer {
         File(scriptsDir, "validate.sh").writeText(validateScript())
         File(scriptsDir, "start-ida-vnc.sh").writeText(startIdaVncPlaceholder())
         File(scriptsDir, "idadroid-file.sh").writeText(idadroidFileScript())
+        File(scriptsDir, "deep-index.sh").writeText(DeepIndexScriptBuilder.build())
 
         listOf(
             File(scriptsDir, "validate.sh"),
             File(scriptsDir, "start-ida-vnc.sh"),
-            File(scriptsDir, "idadroid-file.sh")
+            File(scriptsDir, "idadroid-file.sh"),
+            File(scriptsDir, "deep-index.sh")
         ).forEach { script -> runCatching { Os.chmod(script.absolutePath, 493) } }
     }
 
@@ -72,6 +76,20 @@ class PiWorkspaceMaterializer {
 
         If you need to use Python, ensure you use a virtual environment. If you require missing dependencies, you may install them proactively.
         Do not delete any files outside of the current project workspace! Do not modify any files in /sdcard/* (if needed, copy them to the current challenge workspace).
+
+        ## Deep Index Mode (deep-index)
+        When the user enables Deep Index Mode, a unified tool chain becomes available at
+        /root/pi_workspace/.idadroid/scripts/deep-index.sh. It combines three open-source
+        toolkits — CodeGraph (code graph), ECC (codemaps + security + onboarding), and
+        codebase-memory-mcp (persistent memory) — into a single CLI:
+            alias deep-index='/root/pi_workspace/.idadroid/scripts/deep-index.sh'
+        Run `deep-index help` for the full command list. Typical workflow:
+          deep-index index /root/pi_workspace/<challenge>
+          deep-index codemap /root/pi_workspace/<challenge>
+          deep-index symbols /root/pi_workspace/<challenge>
+          deep-index security /root/pi_workspace/<challenge>
+          deep-index memory-store <key> <insight>
+        Prefer these structured tools over raw grep/find when Deep Index Mode is active.
     """.trimIndent() + "\n"
 
     private fun defaultPiSettings(): String = """

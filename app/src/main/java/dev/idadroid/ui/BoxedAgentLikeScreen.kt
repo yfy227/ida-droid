@@ -50,6 +50,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AccountTree
 import androidx.compose.material.icons.rounded.Api
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.ArrowDownward
@@ -242,6 +243,7 @@ fun BoxedAgentLikeScreen(
     var saveToWorkspaceMessageId by remember { mutableStateOf<String?>(null) }
     var saveToWorkspaceFileName by remember { mutableStateOf("") }
     var quickActionsVisible by remember { mutableStateOf(false) }
+    var deepIndexEnabled by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
@@ -426,7 +428,16 @@ fun BoxedAgentLikeScreen(
                             attachments = emptyList()
                         }
                     },
-                    onAbort = { manager.abort() }
+                    onAbort = { manager.abort() },
+                    deepIndexEnabled = deepIndexEnabled,
+                    onToggleDeepIndex = {
+                        deepIndexEnabled = !deepIndexEnabled
+                        if (deepIndexEnabled) {
+                            manager.enableDeepIndexMode()
+                        } else {
+                            manager.disableDeepIndexMode()
+                        }
+                    }
                 )
             }
         }
@@ -2223,7 +2234,9 @@ private fun ChatComposer(
     manager: PiAgentManager,
     onOpenConfig: () -> Unit,
     onSend: (String?) -> Unit,
-    onAbort: () -> Unit
+    onAbort: () -> Unit,
+    deepIndexEnabled: Boolean = false,
+    onToggleDeepIndex: () -> Unit = {}
 ) {
     Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp), color = MaterialTheme.colorScheme.surfaceContainerLow, contentColor = MaterialTheme.colorScheme.onSurface, shape = RoundedCornerShape(28.dp)) {
         Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -2251,6 +2264,37 @@ private fun ChatComposer(
                 ComposerIconButton(Icons.Rounded.Add, "更多", onClick = { onShowCompactMenu(true) })
                 if (isWorking && !canSend) FilledIconButton(onClick = onAbort, modifier = Modifier.size(38.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.error)) { Icon(Icons.Rounded.Stop, contentDescription = "中止", modifier = Modifier.size(22.dp)) }
                 else FilledIconButton(onClick = { if (isWorking) onShowSendModeMenu(true) else onSend(null) }, enabled = canSend && state.canUseActiveSession, modifier = Modifier.size(38.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = if (canSend && state.canUseActiveSession) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (canSend && state.canUseActiveSession) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant, disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .55f))) { Icon(Icons.Rounded.ArrowUpward, contentDescription = "发送", modifier = Modifier.size(22.dp)) }
+            }
+            // ── Deep Index Mode toggle ──
+            // Combines CodeGraph + ECC + codebase-memory-mcp into one tool chain.
+            Surface(
+                modifier = Modifier.fillMaxWidth().clickable { onToggleDeepIndex() },
+                shape = RoundedCornerShape(16.dp),
+                color = if (deepIndexEnabled) MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surfaceContainerHighest
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        Icons.Rounded.AccountTree,
+                        contentDescription = null,
+                        tint = if (deepIndexEnabled) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text("深度索引模式", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (deepIndexEnabled) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onSurface)
+                        Text(
+                            if (deepIndexEnabled) "已开启 · CodeGraph + ECC + Memory 联动分析" else "点击开启 CodeGraph / ECC / codebase-memory 联合工具链",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (deepIndexEnabled) {
+                        Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(18.dp))
+                    }
+                }
             }
         }
     }
