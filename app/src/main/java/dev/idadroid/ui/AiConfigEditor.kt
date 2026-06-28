@@ -128,39 +128,41 @@ fun AiConfigEditor(
     var showAddModel by remember { mutableStateOf<String?>(null) }
     var showRawJson by remember { mutableStateOf(false) }
 
-    LazyColumn(
+    // IMPORTANT: This composable is embedded inside a LazyColumn item in
+    // PiSettingsTab. A nested LazyColumn would crash with
+    // "Vertically scrollable component was measured with an infinity maximum
+    // height constraints", so we use a plain Column here and let the outer
+    // LazyColumn handle scrolling.
+    Column(
         Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         // ── Status banner ──
-        item { ConfigStatusBanner(parsed) }
+        ConfigStatusBanner(parsed)
 
         // ── Quick presets ──
-        item {
-            ElevatedCard(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.SmartToy, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                        Spacer(Modifier.width(8.dp))
-                        Text("快速添加 Provider", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                    }
-                    Text("点击下方预设可一键创建 Provider，只需填入 API Key 即可使用。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
-                    ProviderPresetRow(parsed.providerIds) { preset ->
-                        val updated = applyPreset(parsed, preset)
-                        val newJson = buildModelsJson(updated.providers, updated.models)
-                        onSnapshotChange(snapshot.copy(
-                            modelsText = newJson,
-                            envText = rebuildEnv(updated.env, updated.providers),
-                            modelCatalog = parseAgentModelCatalog(newJson)
-                        ))
-                    }
+        ElevatedCard(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.SmartToy, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(8.dp))
+                    Text("快速添加 Provider", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                }
+                Text("点击下方预设可一键创建 Provider，只需填入 API Key 即可使用。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                ProviderPresetRow(parsed.providerIds) { preset ->
+                    val updated = applyPreset(parsed, preset)
+                    val newJson = buildModelsJson(updated.providers, updated.models)
+                    onSnapshotChange(snapshot.copy(
+                        modelsText = newJson,
+                        envText = rebuildEnv(updated.env, updated.providers),
+                        modelCatalog = parseAgentModelCatalog(newJson)
+                    ))
                 }
             }
         }
 
         // ── Provider cards ──
-        items(parsed.providers, key = { it.id }) { provider ->
+        parsed.providers.forEach { provider ->
             ProviderCard(
                 provider = provider,
                 isExpanded = editingProvider == provider.id,
@@ -190,48 +192,44 @@ fun AiConfigEditor(
         }
 
         // ── Add provider button ──
-        item {
-            OutlinedButton(
-                onClick = { showAddProvider = true },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(Icons.Rounded.Add, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("添加自定义 Provider")
-            }
+        OutlinedButton(
+            onClick = { showAddProvider = true },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(Icons.Rounded.Add, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("添加自定义 Provider")
         }
 
         // ── Advanced: raw JSON ──
-        item {
-            OutlinedCard(Modifier.fillMaxWidth()) {
-                Row(
-                    Modifier.fillMaxWidth().clickable { showRawJson = !showRawJson }.padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(if (showRawJson) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("高级：直接编辑 JSON", fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
-                    Text("models.json / env", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-                }
-                AnimatedVisibility(showRawJson, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
-                    Column(Modifier.padding(horizontal = 14.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        OutlinedTextField(
-                            value = snapshot.modelsText,
-                            onValueChange = { newText -> onSnapshotChange(snapshot.copy(modelsText = newText, modelCatalog = parseAgentModelCatalog(newText))) },
-                            label = { Text("models.json") },
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 160.dp),
-                            textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
-                            maxLines = 20
-                        )
-                        OutlinedTextField(
-                            value = snapshot.envText,
-                            onValueChange = { newText -> onSnapshotChange(snapshot.copy(envText = newText)) },
-                            label = { Text("env (JSON)") },
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 100.dp),
-                            textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
-                            maxLines = 12
-                        )
-                    }
+        OutlinedCard(Modifier.fillMaxWidth()) {
+            Row(
+                Modifier.fillMaxWidth().clickable { showRawJson = !showRawJson }.padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(if (showRawJson) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("高级：直接编辑 JSON", fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                Text("models.json / env", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+            }
+            AnimatedVisibility(showRawJson, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                Column(Modifier.padding(horizontal = 14.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = snapshot.modelsText,
+                        onValueChange = { newText -> onSnapshotChange(snapshot.copy(modelsText = newText, modelCatalog = parseAgentModelCatalog(newText))) },
+                        label = { Text("models.json") },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 160.dp),
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                        maxLines = 20
+                    )
+                    OutlinedTextField(
+                        value = snapshot.envText,
+                        onValueChange = { newText -> onSnapshotChange(snapshot.copy(envText = newText)) },
+                        label = { Text("env (JSON)") },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 100.dp),
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                        maxLines = 12
+                    )
                 }
             }
         }
