@@ -316,6 +316,10 @@ private data class ParsedConfig(
 }
 
 // ─── Parsing ───────────────────────────────────────────────────────────────────
+// IMPORTANT: This format must match parseAgentModelCatalog() in AgentModelCatalog.kt,
+// which expects providers as a JSON OBJECT (not array) with models nested inside each
+// provider:
+//   { "providers": { "openai": { "baseURL":"...", "envKey":"...", "models":[...] } } }
 
 private fun parseConfig(modelsText: String, envText: String): ParsedConfig {
     val json = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -326,32 +330,27 @@ private fun parseConfig(modelsText: String, envText: String): ParsedConfig {
         val providersList = mutableListOf<ProviderConfig>()
         val modelsList = mutableListOf<ModelConfig>()
 
-        // Parse "providers" array
-        modelsObj["providers"]?.jsonArray?.forEach { elem ->
-            val obj = elem.jsonObject
-            val id = obj["id"]?.jsonPrimitive?.contentOrNull ?: return@forEach
+        // Parse "providers" as an OBJECT: { "openai": { "baseURL":..., "envKey":..., "models":[...] } }
+        val providersObj = modelsObj["providers"] as? JsonObject ?: JsonObject(emptyMap())
+        providersObj.forEach { (providerId, element) ->
+            val id = providerId.trim()
+            if (id.isBlank()) return@forEach
+            val obj = element as? JsonObject ?: JsonObject(emptyMap())
             val baseUrl = obj["baseURL"]?.jsonPrimitive?.contentOrNull ?: obj["baseUrl"]?.jsonPrimitive?.contentOrNull ?: ""
             val envKey = obj["envKey"]?.jsonPrimitive?.contentOrNull ?: "${id.uppercase()}_API_KEY"
             val apiKey = envObj[envKey] ?: ""
-            providersList.add(ProviderConfig(id, baseUrl, envKey, apiKey, emptyList()))
+            val providerModels = (obj["models"] as? JsonArray)?.mapNotNull { item ->
+                val modelObj = item as? JsonObject ?: return@mapNotNull null
+                val mid = modelObj["id"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val mname = modelObj["name"]?.jsonPrimitive?.contentOrNull ?: mid
+                val mreasoning = modelObj["reasoning"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
+                ModelConfig(mid, id, mname, mreasoning)
+            } ?: emptyList()
+            providersList.add(ProviderConfig(id, baseUrl, envKey, apiKey, providerModels))
+            modelsList.addAll(providerModels)
         }
 
-        // Parse "models" array
-        modelsObj["models"]?.jsonArray?.forEach { elem ->
-            val obj = elem.jsonObject
-            val id = obj["id"]?.jsonPrimitive?.contentOrNull ?: return@forEach
-            val provider = obj["provider"]?.jsonPrimitive?.contentOrNull ?: ""
-            val name = obj["name"]?.jsonPrimitive?.contentOrNull ?: id
-            val reasoning = obj["reasoning"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
-            modelsList.add(ModelConfig(id, provider, name, reasoning))
-        }
-
-        // Attach models to their providers
-        val withModels = providersList.map { p ->
-            p.copy(models = modelsList.filter { it.provider == p.id })
-        }
-
-        ParsedConfig(withModels, modelsList, envObj, null)
+        ParsedConfig(providersList, modelsList, envObj, null)
     } catch (e: Exception) {
         ParsedConfig(emptyList(), emptyList(), emptyMap(), e.message ?: "解析失败")
     }
@@ -359,28 +358,25 @@ private fun parseConfig(modelsText: String, envText: String): ParsedConfig {
 
 private fun buildModelsJson(providers: List<ProviderConfig>, models: List<ModelConfig>): String {
     val json = Json { prettyPrint = true }
-    val obj = buildJsonObject {
-        put("providers", buildJsonArray {
-            providers.forEach { p ->
-                add(buildJsonObject {
-                    put("id", JsonPrimitive(p.id))
-                    if (p.baseUrl.isNotBlank()) put("baseURL", JsonPrimitive(p.baseUrl))
-                    put("envKey", JsonPrimitive(p.envKey))
+    // Build providers as a JSON OBJECT with nested models, matching parseAgentModelCatalog.
+    val providersObj = buildJsonObject {
+        providers.forEach { p ->
+            put(p.id, buildJsonObject {
+                if (p.baseUrl.isNotBlank()) put("baseURL", JsonPrimitive(p.baseUrl))
+                put("envKey", JsonPrimitive(p.envKey))
+                put("models", buildJsonArray {
+                    p.models.forEach { m ->
+                        add(buildJsonObject {
+                            put("id", JsonPrimitive(m.id))
+                            if (m.name.isNotBlank() && m.name != m.id) put("name", JsonPrimitive(m.name))
+                            if (m.reasoning) put("reasoning", JsonPrimitive(true))
+                        })
+                    }
                 })
-            }
-        })
-        put("models", buildJsonArray {
-            models.forEach { m ->
-                add(buildJsonObject {
-                    put("id", JsonPrimitive(m.id))
-                    put("provider", JsonPrimitive(m.provider))
-                    if (m.name.isNotBlank()) put("name", JsonPrimitive(m.name))
-                    if (m.reasoning) put("reasoning", JsonPrimitive(true))
-                })
-            }
-        })
+            })
+        }
     }
-    return json.encodeToString(JsonObject.serializer(), obj)
+    return json.encodeToString(JsonObject.serializer(), providersObj)
 }
 
 private fun rebuildEnv(env: Map<String, String>, providers: List<ProviderConfig>): String {

@@ -78,7 +78,7 @@ object DeepIndexScriptBuilder {
         # ── CodeGraph-style: structural code intelligence ────────────────────
 
         cmd_index() {
-            local target="${D}{1:-${D}WORKSPACE}"
+            local target="${D}{1:-${D}{WORKSPACE}"
             [ -d "${D}target" ] || die "target directory not found: ${D}target"
             echo "deep-index: indexing ${D}target ..."
 
@@ -95,7 +95,7 @@ object DeepIndexScriptBuilder {
                     local lineno
                     lineno=$(printf '%s' "${D}pattern" | sed -n 's|.*/^\?\([0-9]*\).*|\1|p')
                     [ -z "${D}lineno" ] && lineno=0
-                    printf '%s\t%s\t%s\t%s\t%s\n' "${D}name" "${D}file" "${D}lineno" "${D}kind:-unknown}" "${D}lang:-unknown}"
+                    printf '%s\t%s\t%s\t%s\t%s\n' "${D}name" "${D}file" "${D}lineno" "${D}{kind:-unknown}" "${D}{lang:-unknown}"
                 done >> "${D}SYMBOLS_FILE"
             else
                 # Fallback: regex-based symbol extraction (functions, classes, defs)
@@ -113,7 +113,7 @@ object DeepIndexScriptBuilder {
                         *class*|*struct*|*interface*|*enum*) kind="type" ;;
                         *) kind="function" ;;
                     esac
-                    printf '%s\t%s\t%s\t%s\t%s\n' "${D}name}" "${D}file}" "${D}line}" "${D}kind}" "$(lang_of "${D}file")"
+                    printf '%s\t%s\t%s\t%s\t%s\n' "${D}{name}" "${D}{file}" "${D}{line}" "${D}{kind}" "$(lang_of "${D}file")"
                 done >> "${D}SYMBOLS_FILE"
             fi
 
@@ -128,13 +128,13 @@ object DeepIndexScriptBuilder {
                 local dep
                 dep=$(printf '%s' "${D}text" | sed -E 's/^[[:space:]]*(import |#include[<"]?|from |use |require\(["'\''])//' | sed -E 's/[<"';'\''()].*//;s/ .*//' | tr -d ' ')
                 [ -z "${D}dep" ] && continue
-                printf '%s\t%s\n' "${D}file}" "${D}dep}"
+                printf '%s\t%s\n' "${D}{file}" "${D}{dep}"
             done >> "${D}DEPS_FILE"
 
             local sym_count dep_count
             sym_count=$(wc -l < "${D}SYMBOLS_FILE" 2>/dev/null || echo 0)
             dep_count=$(wc -l < "${D}DEPS_FILE" 2>/dev/null || echo 0)
-            echo "deep-index: indexed ${D}sym_count} symbols, ${D}dep_count} dependencies"
+            echo "deep-index: indexed ${D}{sym_count} symbols, ${D}{dep_count} dependencies"
             date -u +"%Y-%m-%dT%H:%M:%SZ" > "${D}{INDEX_DIR}/.last-index"
         }
 
@@ -215,7 +215,7 @@ object DeepIndexScriptBuilder {
         # ── ECC-style: codemaps + security + onboarding ──────────────────────
 
         cmd_codemap() {
-            local target="${D}{1:-${D}WORKSPACE}"
+            local target="${D}{1:-${D}{WORKSPACE}"
             [ -d "${D}target" ] || die "target not found: ${D}target"
             local out="${D}CODEMAP_DIR/architecture.md"
             {
@@ -248,7 +248,7 @@ object DeepIndexScriptBuilder {
         }
 
         cmd_security() {
-            local target="${D}{1:-${D}WORKSPACE}"
+            local target="${D}{1:-${D}{WORKSPACE}"
             [ -d "${D}target" ] || die "target not found: ${D}target"
             echo "=== AgentShield-style security audit: ${D}target ==="
             local SCANNER; SCANNER=$(search_cmd)
@@ -257,7 +257,7 @@ object DeepIndexScriptBuilder {
             echo "--- hardcoded secrets ---"
             ${D}SCANNER -niE '(api[_-]?key|secret|password|token|passwd)\s*[=:]\s*["'\''][^"'\'']{8,}' "${D}target" 2>/dev/null | head -15 | sed 's/^/  /' || true
             findings=$(${D}SCANNER -ciE '(api[_-]?key|secret|password|token|passwd)\s*[=:]\s*["'\''][^"'\'']{8,}' "${D}target" 2>/dev/null | awk '{s+=$1} END {print s+0}')
-            echo "  (${D}findings} potential secret exposures)"
+            echo "  (${D}{findings} potential secret exposures)"
             # Dangerous functions
             echo "--- dangerous functions ---"
             ${D}SCANNER -nw 'eval(' --include='*.kt' --include='*.java' --include='*.js' --include='*.py' "${D}target" 2>/dev/null | head -10 | sed 's/^/  /' || true
@@ -269,7 +269,7 @@ object DeepIndexScriptBuilder {
         }
 
         cmd_onboard() {
-            local target="${D}{1:-${D}WORKSPACE}"
+            local target="${D}{1:-${D}{WORKSPACE}"
             [ -d "${D}target" ] || die "target not found: ${D}target"
             echo "=== Codebase Onboarding: ${D}target ==="
             echo ""
@@ -306,12 +306,12 @@ object DeepIndexScriptBuilder {
             local escaped_val
             escaped_val=$(printf '%s' "${D}value" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
             local entry
-            entry=$(printf '{"key":"%s","value":"%s","file":"","ts":"%s"}' "${D}key}" "${D}escaped_val}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+            entry=$(printf '{"key":"%s","value":"%s","file":"","ts":"%s"}' "${D}{key}" "${D}{escaped_val}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
             # Insert before closing bracket
             python3 -c "
 import json,sys
 with open('${D}MEMORY_FILE','r') as f: d=json.load(f)
-d['entries']=[e for e in d['entries'] if e.get('key')!='${D}key}'] + [${D}entry}]
+d['entries']=[e for e in d['entries'] if e.get('key')!='${D}{key}'] + [${D}{entry}]
 with open('${D}MEMORY_FILE','w') as f: json.dump(d,f,indent=2,ensure_ascii=False)
 " 2>/dev/null || sed -i "s/]}$/,${D}entry]}/" "${D}MEMORY_FILE"
             echo "deep-index: stored memory '${D}key'"
@@ -324,12 +324,12 @@ with open('${D}MEMORY_FILE','w') as f: json.dump(d,f,indent=2,ensure_ascii=False
             python3 -c "
 import json
 with open('${D}MEMORY_FILE','r') as f: d=json.load(f)
-q='${D}query}'.lower().split()
+q='${D}{query}'.lower().split()
 for e in d['entries']:
     text=(e.get('key','')+' '+e.get('value','')).lower()
     score=sum(1 for w in q if w in text)
     if score: print(f'  [{score}] {e[\"key\"]}: {e[\"value\"][:120]}')
-" 2>/dev/null || grep -i "${D}query}" "${D}MEMORY_FILE" | head -10
+" 2>/dev/null || grep -i "${D}{query}" "${D}MEMORY_FILE" | head -10
         }
 
         cmd_memory_list() {

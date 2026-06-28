@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -29,7 +30,7 @@ class FileTransferHttpServer(
     private val manager: FileTransferManager,
     private val port: Int = DEFAULT_PORT
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var serverSocket: ServerSocket? = null
     @Volatile private var running = false
     private var acceptJob: Job? = null
@@ -39,6 +40,10 @@ class FileTransferHttpServer(
 
     fun start() {
         if (running) return
+        // Recreate the scope if it was previously cancelled by stop().
+        if (!scope.isActive) {
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        }
         val socket = ServerSocket(port)
         serverSocket = socket
         running = true
@@ -59,8 +64,11 @@ class FileTransferHttpServer(
     fun stop() {
         running = false
         acceptJob?.cancel()
+        acceptJob = null
         runCatching { serverSocket?.close() }
         serverSocket = null
+        // Cancel the scope but DO NOT make it un-restartable — start() recreates
+        // the scope if needed so the server can be started again after stop().
         scope.cancel()
     }
 
