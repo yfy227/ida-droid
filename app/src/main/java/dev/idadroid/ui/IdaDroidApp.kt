@@ -330,6 +330,15 @@ fun IdaDroidApp() {
                         }
                     },
                     onShowMcpLog = { showMcpLog = true },
+                    onToggleMcpMonitoring = { enabled ->
+                        mcpManager.setMonitoringEnabled(enabled)
+                    },
+                    onMcpHealthCheck = {
+                        scope.launch {
+                            val ok = mcpManager.healthCheck()
+                            transientMessage = if (ok) "健康检查通过" else "健康检查失败"
+                        }
+                    },
                     onRevalidate = {
                         scope.launch {
                             validationBusy = true
