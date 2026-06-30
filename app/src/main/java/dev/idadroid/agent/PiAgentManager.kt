@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -41,6 +42,10 @@ class PiAgentManager(
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false; isLenient = true }
     private val runtimes = mutableMapOf<String, PiRpcRuntime>()
     private val rawLines = ArrayDeque<String>()
+    // Send lock: prevents concurrent sendPrompt calls from racing. Operit uses
+    // a similar coordination pattern in MessageCoordinationDelegate.
+    private val sendMutex = kotlinx.coroutines.sync.Mutex()
+    @Volatile private var sendingInProgress = false
 
     // ==================== 流式 delta 合并器 ====================
     // 高频 text_delta / thinking_delta 事件会以每秒数十~数百次的频率到达，
@@ -166,15 +171,35 @@ class PiAgentManager(
     }
 
     fun sendPrompt(text: String, attachments: List<DraftAttachment> = emptyList(), sendMode: String? = null) {
+        // Guard: drop the call if a send is already in flight. This prevents
+        // double-tap races where the user hits the send button twice quickly
+        // and two prompts get queued into the RPC runtime simultaneously.
+        if (sendingInProgress) {
+            _state.update { it.copy(activity = "上一条消息仍在发送中，请稍候…") }
+            return
+        }
         scope.launch {
-            val sessionId = _state.value.activeSessionId ?: run {
-                val created = createDefaultSessionWithConfiguredModel()
-                refresh()
-                created.id
+            sendingInProgress = true
+            try {
+                sendPromptInternal(text, attachments, sendMode)
+            } finally {
+                sendingInProgress = false
             }
-            val trimmed = text.trimEnd()
-            if (trimmed.isBlank() && attachments.isEmpty()) return@launch
-            val wasWorking = _state.value.isWorking
+        }
+    }
+
+    private suspend fun sendPromptInternal(text: String, attachments: List<DraftAttachment>, sendMode: String?) {
+        val sessionId = _state.value.activeSessionId ?: run {
+            val created = createDefaultSessionWithConfiguredModel()
+            refresh()
+            created.id
+        }
+        val trimmed = text.trimEnd()
+        if (trimmed.isBlank() && attachments.isEmpty()) return
+        // Acquire the send mutex so only one prompt flows through the RPC
+        // runtime at a time. If the user sends again while we're still
+        // attaching files or waiting for the runtime, the second call waits.
+        sendMutex.withLock {
             try {
                 val session = repo.setActive(sessionId)
                 val stored = attachmentManager.storeAttachments(attachments)
@@ -190,14 +215,29 @@ class PiAgentManager(
 
                 appendMessage(ChatMessage(newMessageId(), "user", displayMessage, System.currentTimeMillis(), attachments = displayAttachments))
                 setTurnActive(sessionId, true)
+                _state.update { it.copy(activity = "正在发送消息…") }
                 val expanded = attachmentManager.expandFileReferencesForPrompt(displayMessage, session.cwd)
                 val runtime = startSessionInternal(sessionId)
                 when (sendMode) {
                     "steer" -> runtime.steer(expanded.message)
                     "followUp" -> runtime.followUp(expanded.message)
                     else -> {
+                        val wasWorking = _state.value.isWorking
                         if (wasWorking) runCatching { runtime.abort() }
-                        runtime.prompt(expanded.message, expanded.images)
+                        // Wrap the prompt call with a timeout so a hung RPC
+                        // doesn't leave the UI stuck in "working" forever.
+                        runCatching {
+                            kotlinx.coroutines.withTimeout(PROMPT_TIMEOUT_MS) {
+                                runtime.prompt(expanded.message, expanded.images)
+                            }
+                        }.onFailure { e ->
+                            if (e is kotlinx.coroutines.TimeoutCancellationException) {
+                                appendMessage(ChatMessage(newMessageId(), "system", "发送超时，请检查 Agent 是否响应", System.currentTimeMillis()))
+                                runCatching { runtime.abort() }
+                            } else {
+                                throw e
+                            }
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -966,5 +1006,7 @@ class PiAgentManager(
     private companion object {
         /** 流式 delta 合并 flush 节拍，约 30fps：兼顾逐字流式的视觉流畅与状态更新开销。 */
         const val STREAM_FLUSH_INTERVAL_MS = 33L
+        /** 单次 prompt 调用的超时时间。超过后中止并提示用户，避免 UI 永久卡在 working 状态。 */
+        const val PROMPT_TIMEOUT_MS = 600_000L // 10 分钟
     }
 }

@@ -10,6 +10,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,10 +21,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.ExpandLess
@@ -39,6 +43,8 @@ import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.InputChip
+import androidx.compose.material3.InputChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
@@ -57,6 +63,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -256,6 +263,7 @@ private fun ConfigStatusBanner(parsed: ParsedConfig) {
 
 // ─── Provider card ─────────────────────────────────────────────────────────────
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ProviderCard(
     provider: ProviderConfig,
@@ -333,19 +341,71 @@ private fun ProviderCard(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                // Models — simple comma-separated text field (much friendlier than
-                // a separate add/edit dialog for each model)
-                val modelsText = provider.models.joinToString(", ") { it.id }
-                OutlinedTextField(
-                    value = modelsText,
-                    onValueChange = { newText ->
-                        val newModels = newText.split(",", "\n").map { it.trim() }.filter { it.isNotBlank() }.map { ModelConfig(it, provider.id, it) }
-                        onUpdate(provider.copy(models = newModels))
-                    },
-                    label = { Text("模型 ID（逗号分隔）") },
-                    supportingText = { Text("例如：gpt-4o, gpt-4o-mini, o1-preview", fontSize = 11.sp) },
-                    modifier = Modifier.fillMaxWidth()
-                )
+                // Models — chip-based editor (like Operit's tag UI): each model
+                // shows as a removable chip, with an inline add field at the end.
+                Text("模型列表", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (provider.models.isNotEmpty()) {
+                    androidx.compose.foundation.layout.FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        provider.models.forEach { model ->
+                            InputChip(
+                                selected = false,
+                                onClick = {},
+                                label = { Text(model.id, fontSize = 12.sp) },
+                                trailingIcon = {
+                                    Icon(
+                                        Icons.Rounded.Close,
+                                        contentDescription = "移除",
+                                        modifier = Modifier
+                                            .size(14.dp)
+                                            .clickable {
+                                                val newModels = provider.models.filterNot { it.id == model.id }
+                                                onUpdate(provider.copy(models = newModels))
+                                            }
+                                    )
+                                },
+                                colors = InputChipDefaults.inputChipColors(
+                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                    labelColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                            )
+                        }
+                    }
+                }
+                var newModelText by remember(provider.id) { mutableStateOf("") }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = newModelText,
+                        onValueChange = { newModelText = it },
+                        label = { Text("添加模型 ID") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = {
+                            val id = newModelText.trim()
+                            if (id.isNotBlank() && provider.models.none { it.id == id }) {
+                                onUpdate(provider.copy(models = provider.models + ModelConfig(id, provider.id, id)))
+                                newModelText = ""
+                            }
+                        })
+                    )
+                    IconButton(onClick = {
+                        val id = newModelText.trim()
+                        if (id.isNotBlank() && provider.models.none { it.id == id }) {
+                            onUpdate(provider.copy(models = provider.models + ModelConfig(id, provider.id, id)))
+                            newModelText = ""
+                        }
+                    }) {
+                        Icon(Icons.Rounded.Add, contentDescription = "添加模型")
+                    }
+                }
 
                 // Delete
                 HorizontalDivider()
