@@ -82,7 +82,7 @@ class PiAgentManager(
             ).id
             else -> null
         }
-        val sessions = repo.loadStore().sessions
+        val sessions = store.sessions
         _state.update { old ->
             val activeSession = sessions.firstOrNull { it.id == active }
             old.copy(

@@ -223,7 +223,7 @@ class PiWorkspaceMaterializer {
         MANIFEST="/root/pi_workspace/.transfer/manifest.json"
         TRANSFER_DIR="/root/pi_workspace/.transfer"
         MCP_HOST="127.0.0.1"
-        MCP_PORT="8766"
+        MCP_PORT="8765"
 
         die() { echo "idadroid-file: ${D}{*}" >&2; exit 1; }
 

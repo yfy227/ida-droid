@@ -27,7 +27,8 @@ import kotlinx.coroutines.withContext
 
 class IdaMcpSessionManager(
     context: Context,
-    private val paths: EnvironmentPaths = EnvironmentPaths.of(context)
+    private val paths: EnvironmentPaths = EnvironmentPaths.of(context),
+    private val settingsStore: dev.idadroid.settings.IdaDroidSettings? = null
 ) {
     private val appContext = context.applicationContext
     private val runtime = IdaProotRuntime(appContext, paths = paths)
@@ -35,7 +36,7 @@ class IdaMcpSessionManager(
     private val fileTransferServer = FileTransferHttpServer(fileTransferManager)
     private val watchdogScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var watchdogJob: Job? = null
-    @Volatile private var monitoringEnabled: Boolean = true
+    @Volatile private var monitoringEnabled: Boolean = settingsStore?.mcpSettings?.value?.autoRestart ?: true
     private val autoRestartCount = AtomicInteger(0)
     @Volatile private var lastHealthCheckAt: Long = 0L
     @Volatile private var lastHealthOk: Boolean = false
@@ -47,13 +48,33 @@ class IdaMcpSessionManager(
         IdaMcpSessionState(
             status = IdaMcpStatus.Stopped,
             message = "未启动",
-            settings = IdaMcpLaunchSettings()
+            settings = currentLaunchSettings()
         )
     )
     val state: StateFlow<IdaMcpSessionState> = _state.asStateFlow()
 
     fun updateSettings(settings: IdaMcpLaunchSettings) {
         _state.value = _state.value.copy(settings = settings.sanitized())
+    }
+
+    /** Build launch settings from the central IdaDroidSettings store (if available). */
+    private fun currentLaunchSettings(): IdaMcpLaunchSettings {
+        val mcp = settingsStore?.mcpSettings?.value ?: return IdaMcpLaunchSettings()
+        return IdaMcpLaunchSettings(
+            bindHost = mcp.bindHost,
+            port = mcp.port,
+            allowOrigin = mcp.allowOrigin,
+            stateless = mcp.stateless,
+            sessionKeepAliveSecs = mcp.sessionKeepAliveSecs,
+            sseKeepAliveSecs = mcp.sseKeepAliveSecs
+        )
+    }
+
+    /** Refresh state from settings — call after the user changes MCP settings. */
+    fun refreshFromSettings() {
+        val refreshed = currentLaunchSettings()
+        _state.value = _state.value.copy(settings = refreshed.sanitized())
+        monitoringEnabled = settingsStore?.mcpSettings?.value?.autoRestart ?: true
     }
 
     suspend fun start(settings: IdaMcpLaunchSettings = _state.value.settings): Result<IdaMcpSessionState> {
@@ -72,8 +93,11 @@ class IdaMcpSessionManager(
             val startResult = withContext(Dispatchers.IO) {
                 runCatching {
                     require(paths.readyMarker.isFile && paths.rootfsDir.isDirectory) { "rootfs 尚未 ready，请先导入并验证环境" }
-                    val binary = File(paths.rootfsDir, "root/ida-pro-9.3/ida-mcp")
-                    require(binary.isFile) { "缺少 /root/ida-pro-9.3/ida-mcp" }
+                    val idaHome = settingsStore?.envSettings?.value?.idaHome ?: dev.idadroid.settings.IdaDroidSettings.DEFAULT_IDA_HOME
+                    val idaHomeGuest = idaHome.trimEnd('/')
+                    val idaHomeHost = idaHomeGuest.trimStart('/')
+                    val binary = File(paths.rootfsDir, "$idaHomeHost/ida-mcp")
+                    require(binary.isFile) { "缺少 $idaHomeGuest/ida-mcp" }
                     runCatching { Os.chmod(binary.absolutePath, 493) }
                     materializeLogDir()
 
@@ -225,11 +249,12 @@ class IdaMcpSessionManager(
     )
 
     private fun buildStartCommand(settings: IdaMcpLaunchSettings): String = buildString {
+        val idaHome = (settingsStore?.envSettings?.value?.idaHome ?: dev.idadroid.settings.IdaDroidSettings.DEFAULT_IDA_HOME).trimEnd('/')
         appendLine("set -e")
-        appendLine("cd /root/ida-pro-9.3")
-        appendLine("export IDADIR=/root/ida-pro-9.3")
-        appendLine("export LD_LIBRARY_PATH=/root/ida-pro-9.3:\${LD_LIBRARY_PATH:-}")
-        append("exec /root/ida-pro-9.3/ida-mcp serve-http")
+        appendLine("cd $idaHome")
+        appendLine("export IDADIR=$idaHome")
+        appendLine("export LD_LIBRARY_PATH=$idaHome:\${LD_LIBRARY_PATH:-}")
+        append("exec $idaHome/ida-mcp serve-http")
         append(" --bind ").append(IdaProotRuntime.shellQuote(settings.bind))
         append(" --allow-origin ").append(IdaProotRuntime.shellQuote(settings.allowOrigin))
         if (settings.allowHost.isNotBlank()) {
@@ -241,11 +266,14 @@ class IdaMcpSessionManager(
         appendLine()
     }
 
-    private fun buildStopCommand(settings: IdaMcpLaunchSettings): String = """
-        set +e
-        pkill -f '/root/ida-pro-9.3/ida-mcp serve-http' 2>/dev/null || true
-        pkill -f 'ida-mcp serve-http --bind ${settings.bind}' 2>/dev/null || true
-    """.trimIndent()
+    private fun buildStopCommand(settings: IdaMcpLaunchSettings): String {
+        val idaHomeKill = (settingsStore?.envSettings?.value?.idaHome ?: dev.idadroid.settings.IdaDroidSettings.DEFAULT_IDA_HOME).trimEnd('/')
+        return """
+            set +e
+            pkill -f '${idaHomeKill}/ida-mcp serve-http' 2>/dev/null || true
+            pkill -f 'ida-mcp serve-http --bind ${settings.bind}' 2>/dev/null || true
+        """.trimIndent()
+    }
 
     private fun isTcpOpen(port: Int): Boolean = runCatching {
         Socket().use { socket ->
