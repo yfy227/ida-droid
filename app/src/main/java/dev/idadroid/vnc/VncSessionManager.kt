@@ -392,6 +392,7 @@ class VncSessionManager(
           sleep 2
         done
     """.trimIndent() + "\n"
+    }
 
     private fun stopScript(): String {
         val idaHome = settingsStore.envSettings.value.idaHome.trimEnd('/')

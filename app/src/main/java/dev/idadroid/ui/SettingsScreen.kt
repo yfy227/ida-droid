@@ -472,7 +472,7 @@ fun SettingsScreen(
 
             // ==================== AVNC ====================
             item { HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp)) }
-            item { SettingsSectionHeader("AVNC Viewer", Icons.Default.OpenInNew) }
+            item { SettingsSectionHeader("AVNC Viewer", Icons.AutoMirrored.Filled.OpenInNew) }
             item {
                 SettingsItem(
                     title = "打开 AVNC",
