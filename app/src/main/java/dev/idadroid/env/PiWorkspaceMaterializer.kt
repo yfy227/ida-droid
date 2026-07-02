@@ -1,6 +1,7 @@
 package dev.idadroid.env
 
 import android.system.Os
+import dev.idadroid.agent.defaultSystemAppendPrompt
 import dev.idadroid.deepindex.DeepIndexScriptBuilder
 import java.io.File
 
@@ -19,7 +20,7 @@ class PiWorkspaceMaterializer {
 
         listOf(workspace, uploadDir, transferDir, sessionDir, piDir, idaDroidDir, piAgentDir, logsDir, scriptsDir, deepIndexDir).forEach { it.mkdirs() }
 
-        File(piDir, "APPEND_SYSTEM.md").writeTextIfMissing(appendSystemPrompt())
+        File(piDir, "APPEND_SYSTEM.md").writeTextIfMissing(defaultSystemAppendPrompt())
         File(piAgentDir, "settings.json").writeTextIfMissing(defaultPiSettings())
         File(piAgentDir, "rpc-stdio-guard.cjs").writeText(rpcStdioGuardScript())
         File(scriptsDir, "validate.sh").writeText(validateScript())
@@ -38,59 +39,6 @@ class PiWorkspaceMaterializer {
     private fun File.writeTextIfMissing(text: String) {
         if (!isFile) writeText(text)
     }
-
-    private fun appendSystemPrompt(): String = """
-        # IDAdroid workspace
-        You are running inside IDAdroid's proot rootfs.
-        You are an expert CTF Reverse Engineering (RE) challenge designer.
-        The user prompt will provide a CTF RE challenge, which may include attachments.
-        Your goal is to solve this challenge and, based on the challenge and your solution steps, design a new CTF RE challenge.
-        You need to generate the following content:
-         1. Challenge Description / Problem Statement
-         2. Challenge Solution Results
-         3. Writeup (WP)
-        All of this content must be placed in a dedicated folder for each specific challenge under the pi_workspace directory (create a new folder for every new challenge).
-         * Working directory: /root/pi_workspace.
-         * IDA home: /root/ida-pro-9.3.
-         * ida-mcp entry: /root/ida-pro-9.3/ida-mcp.
-         * ida-mcp/mcpc usage doc: /root/ida-pro-9.3/IDA_MCP_MCPC_USAGE.md.
-         * Attachments copied from Android live in /root/pi_workspace/.upload.
-         * Host-transferred files live in /root/pi_workspace/.transfer (see idadroid-file below).
-         * pi sessions live in /root/pi_workspace/.pi-sessions.
-        For reverse-engineering tasks, first read IDA_MCP_MCPC_USAGE.md, then use mcpc to call ida-mcp.
-
-        ## File transfer bridge (idadroid-file)
-        A helper script at /root/pi_workspace/.idadroid/scripts/idadroid-file.sh bridges the Android host and this container.
-        It is recommended to symlink or alias it for convenience:
-            alias idadroid-file='/root/pi_workspace/.idadroid/scripts/idadroid-file.sh'
-        Usage:
-          idadroid-file list            — list files transferred from the Android host
-          idadroid-file find <name>     — print the container path of a transferred file (fuzzy match)
-          idadroid-file open <name>     — look up a transferred file and open it in IDA via mcpc
-          idadroid-file path <name>     — alias of find
-        When you need to open a file in IDA, FIRST check whether the file was transferred from the host:
-            idadroid-file find <filename>
-        If a match is found, use the returned path with mcpc directly — this avoids path-mismatch issues
-        between the Android host and the container. If no match is found, fall back to the normal mcpc open_file flow.
-        The transfer manifest is also readable directly at /root/pi_workspace/.transfer/manifest.json.
-
-        If you need to use Python, ensure you use a virtual environment. If you require missing dependencies, you may install them proactively.
-        Do not delete any files outside of the current project workspace! Do not modify any files in /sdcard/* (if needed, copy them to the current challenge workspace).
-
-        ## Deep Index Mode (deep-index)
-        When the user enables Deep Index Mode, a unified tool chain becomes available at
-        /root/pi_workspace/.idadroid/scripts/deep-index.sh. It combines three open-source
-        toolkits — CodeGraph (code graph), ECC (codemaps + security + onboarding), and
-        codebase-memory-mcp (persistent memory) — into a single CLI:
-            alias deep-index='/root/pi_workspace/.idadroid/scripts/deep-index.sh'
-        Run `deep-index help` for the full command list. Typical workflow:
-          deep-index index /root/pi_workspace/<challenge>
-          deep-index codemap /root/pi_workspace/<challenge>
-          deep-index symbols /root/pi_workspace/<challenge>
-          deep-index security /root/pi_workspace/<challenge>
-          deep-index memory-store <key> <insight>
-        Prefer these structured tools over raw grep/find when Deep Index Mode is active.
-    """.trimIndent() + "\n"
 
     private fun defaultPiSettings(): String = """
         {

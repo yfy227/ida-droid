@@ -37,6 +37,7 @@ import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ElevatedCard
@@ -99,11 +100,38 @@ private val PROVIDER_PRESETS = listOf(
     ProviderPreset("openai", "OpenAI", "https://api.openai.com/v1", "OPENAI_API_KEY", Color(0xFF10A37F), "GPT-4o / o1 / o3 系列"),
     ProviderPreset("anthropic", "Anthropic Claude", "https://api.anthropic.com", "ANTHROPIC_API_KEY", Color(0xFFD97757), "Claude 3.5 / 3.7 / 4 系列"),
     ProviderPreset("deepseek", "DeepSeek", "https://api.deepseek.com", "DEEPSEEK_API_KEY", Color(0xFF4D6BFE), "DeepSeek-V3 / R1 系列"),
+    ProviderPreset("google", "Google Gemini", "https://generativelanguage.googleapis.com/v1beta", "GOOGLE_API_KEY", Color(0xFF4285F4), "Gemini 2.0 / 2.5 系列"),
     ProviderPreset("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", Color(0xFF8B5CF6), "聚合 300+ 模型"),
     ProviderPreset("moonshot", "Moonshot KIMI", "https://api.moonshot.cn/v1", "MOONSHOT_API_KEY", Color(0xFF1A1A2E), "Kimi K1.5 / K2 系列"),
     ProviderPreset("dashscope", "阿里通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY", Color(0xFF615CED), "Qwen 系列"),
+    ProviderPreset("volcengine", "火山引擎豆包", "https://ark.cn-beijing.volces.com/api/v3", "ARK_API_KEY", Color(0xFF1664FF), "Doubao 系列"),
+    ProviderPreset("baidu", "百度千帆", "https://qianfan.baidubce.com/v2", "BAIDU_API_KEY", Color(0xFF2932E1), "ERNIE 系列"),
+    ProviderPreset("hunyuan", "腾讯混元", "https://api.hunyuan.cloud.tencent.com/v1", "HUNYUAN_API_KEY", Color(0xFF0053E0), "Hunyuan 系列"),
     ProviderPreset("siliconflow", "SiliconFlow", "https://api.siliconflow.cn/v1", "SILICONFLOW_API_KEY", Color(0xFF00B4A6), "硅基流动聚合平台"),
+    ProviderPreset("mistral", "Mistral AI", "https://api.mistral.ai/v1", "MISTRAL_API_KEY", Color(0xFFFF5200), "Mistral / Codestral 系列"),
+    ProviderPreset("groq", "Groq", "https://api.groq.com/openai/v1", "GROQ_API_KEY", Color(0xFFF55036), "超低延迟推理"),
+    ProviderPreset("xai", "xAI Grok", "https://api.x.ai/v1", "XAI_API_KEY", Color(0xFF000000), "Grok 系列"),
+    ProviderPreset("together", "Together AI", "https://api.together.xyz/v1", "TOGETHER_API_KEY", Color(0xFF0F6FFF), "开源模型聚合"),
     ProviderPreset("custom", "自定义", "", "CUSTOM_API_KEY", Color(0xFF6B7280), "手动填写 Base URL")
+)
+
+/** 每个 Provider 的常用模型建议列表，帮助用户快速添加而不用手打 ID。 */
+private val MODEL_SUGGESTIONS: Map<String, List<String>> = mapOf(
+    "openai" to listOf("gpt-4o", "gpt-4o-mini", "o1", "o1-mini", "o3", "o3-mini", "gpt-4.1", "gpt-4.1-mini"),
+    "anthropic" to listOf("claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"),
+    "deepseek" to listOf("deepseek-chat", "deepseek-reasoner"),
+    "google" to listOf("gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-lite"),
+    "openrouter" to listOf("anthropic/claude-sonnet-4", "openai/gpt-4o", "google/gemini-2.5-flash", "deepseek/deepseek-chat", "x-ai/grok-3"),
+    "moonshot" to listOf("moonshot-v1-128k", "moonshot-v1-32k", "moonshot-v1-8k", "kimi-thinking-preview"),
+    "dashscope" to listOf("qwen-max", "qwen-plus", "qwen-turbo", "qwen-long", "qwen3-235b-a22b"),
+    "volcengine" to listOf("doubao-1-5-pro-256k", "doubao-1-5-pro-32k", "doubao-1-5-lite-32k", "deepseek-r1-250120"),
+    "baidu" to listOf("ernie-4.0-8k-latest", "ernie-4.0-turbo-8k", "ernie-speed-128k", "deepseek-r1"),
+    "hunyuan" to listOf("hunyuan-turbos", "hunyuan-standard", "hunyuan-lite", "hunyuan-large"),
+    "siliconflow" to listOf("deepseek-ai/DeepSeek-V3", "deepseek-ai/DeepSeek-R1", "Qwen/Qwen2.5-72B-Instruct", "meta-llama/Llama-3.3-70B-Instruct"),
+    "mistral" to listOf("mistral-large-latest", "mistral-small-latest", "codestral-latest", "open-mixtral-8x22b"),
+    "groq" to listOf("llama-3.3-70b-versatile", "llama-3.1-8b-instant", "deepseek-r1-distill-llama-70b", "mixtral-8x7b-32768"),
+    "xai" to listOf("grok-3", "grok-3-mini", "grok-2-vision"),
+    "together" to listOf("meta-llama/Llama-3.3-70B-Instruct-Turbo", "Qwen/Qwen2.5-72B-Instruct-Turbo", "deepseek-ai/DeepSeek-V3")
 )
 
 private fun presetById(id: String): ProviderPreset? = PROVIDER_PRESETS.firstOrNull { it.id == id }
@@ -407,6 +435,41 @@ private fun ProviderCard(
                     }
                 }
 
+                // ── Smart model suggestions ──
+                MODEL_SUGGESTIONS[provider.id]?.let { suggestions ->
+                    val unadded = suggestions.filter { s -> provider.models.none { it.id == s } }
+                    if (unadded.isNotEmpty()) {
+                        Text("推荐模型（点击添加）", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        androidx.compose.foundation.layout.FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            unadded.forEach { modelId ->
+                                AssistChip(
+                                    onClick = {
+                                        onUpdate(provider.copy(models = provider.models + ModelConfig(modelId, provider.id, modelId)))
+                                    },
+                                    label = { Text(modelId, fontSize = 11.sp) },
+                                    leadingIcon = { Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // ── API Key validation hint ──
+                if (provider.apiKey.isNotBlank() && provider.id != "custom") {
+                    val keyValid = validateApiKeyFormat(provider.id, provider.apiKey)
+                    if (!keyValid) {
+                        Text(
+                            "⚠️ API Key 格式可能不正确，请检查是否复制完整",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+
                 // Delete
                 HorizontalDivider()
                 Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
@@ -587,4 +650,31 @@ private fun removeEnvKeys(env: Map<String, String>, keys: List<String>): String 
         filtered.forEach { (k, v) -> put(k, JsonPrimitive(v)) }
     }
     return json.encodeToString(JsonObject.serializer(), obj)
+}
+
+/**
+ * 轻量级 API Key 格式校验，仅检查常见前缀和长度。
+ * 不做网络请求，只给用户即时提示。
+ */
+private fun validateApiKeyFormat(providerId: String, apiKey: String): Boolean {
+    val key = apiKey.trim()
+    if (key.length < 10) return false
+    return when (providerId) {
+        "openai" -> key.startsWith("sk-") && key.length >= 20
+        "anthropic" -> key.startsWith("sk-ant-")
+        "deepseek" -> key.length >= 20
+        "google" -> key.startsWith("AI") && key.length >= 20
+        "openrouter" -> key.startsWith("sk-or-")
+        "moonshot" -> key.startsWith("sk-")
+        "dashscope" -> key.length >= 20
+        "volcengine" -> key.length >= 20
+        "baidu" -> key.length >= 20
+        "hunyuan" -> key.length >= 20
+        "siliconflow" -> key.startsWith("sk-")
+        "mistral" -> key.length >= 20
+        "groq" -> key.startsWith("gsk_")
+        "xai" -> key.startsWith("xai-")
+        "together" -> key.length >= 20
+        else -> true // custom and unknown providers: skip validation
+    }
 }
