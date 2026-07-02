@@ -505,6 +505,18 @@ private fun ProviderCard(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                // 端点补全提示
+                if (provider.baseUrl.isNotBlank() && !provider.baseUrl.endsWith("#")) {
+                    val completed = dev.idadroid.agent.EndpointCompleter.complete(provider.baseUrl, provider.id)
+                    if (completed != provider.baseUrl.trim().removeSuffix("/")) {
+                        Text(
+                            "→ 实际请求: $completed",
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
 
                 // API Key with show/hide
                 var showKey by remember { mutableStateOf(false) }

@@ -35,6 +35,7 @@ class PiAgentManager(
     private val appContext = context.applicationContext
     private val repo = AgentSessionRepository(paths)
     private val configManager = PiConfigManager(paths)
+    val aiConfigTools = AiConfigTools(paths, configManager)
     private val attachmentManager = AttachmentManager(appContext, paths)
     val workspaceManager = WorkspaceManager(appContext, paths)
     private val deepIndexToolChain = dev.idadroid.deepindex.DeepIndexToolChain(appContext, paths)
