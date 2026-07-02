@@ -13,12 +13,19 @@ IDAdroid 将完整的 IDA Pro 逆向工程环境、ida-mcp 工具链和 AI Agent
 ### 3. AI Agent 聊天
 集成 pi coding agent（`--mode rpc`），支持：
 - 流式对话、思考过程展示
-- 多模型/多 Provider 配置（OpenAI、Anthropic、DeepSeek、Google Gemini、通义千问、豆包等 15+ 平台）
+- 多模型/多 Provider 配置（OpenAI、Anthropic、DeepSeek、Google Gemini、通义千问、豆包等 16+ 平台）
+- **智能模型推荐** — 每个 Provider 附带常用模型列表，一键添加
+- **API 连接测试** — 配置后可一键验证 API Key + 端点可用性
+- **模型列表拉取** — 从 Provider API 动态获取可用模型列表
+- **配置导入导出** — 完整 AI 配置可导出为 JSON 备份，支持导入恢复
+- **API Key 格式校验** — 输入时即时检查 Key 前缀和长度
+- **端点自动补全** — 裸域名自动追加 `/v1/chat/completions`，Anthropic 自动追加 `/v1/messages`
 - 附件上传（图片/文件），自动传输到容器
 - Session 管理、上下文压缩
 - 通过 `mcpc` / `ida-mcp` 操作 IDA 进行自动化逆向
 - 深度索引模式（CodeGraph + ECC + codebase-memory）
 - Android 主机 ⇄ 容器文件传输桥
+- **智能工作流** — Agent 根据请求类型自适应选择工具链和分析深度
 
 ## 技术架构
 
@@ -52,7 +59,9 @@ Android App (Kotlin / Jetpack Compose / Material 3)
 | `PiAgentManager.kt` | Agent 生命周期、session 管理、流式消息 |
 | `PiConfigManager.kt` | Pi 配置读写、系统提示词、环境变量 |
 | `PiRpcRuntime.kt` | pi RPC 进程管理、stdio 通信 |
-| `AiConfigEditor.kt` | 可视化 AI Provider/Model 配置 UI |
+| `AiConfigEditor.kt` | 可视化 AI Provider/Model 配置 UI、连接测试、导入导出 |
+| `AiConfigTools.kt` | 配置导入导出、API 连接测试、模型列表拉取 |
+| `EndpointCompleter.kt` | API 端点 URL 自动补全 |
 | `AgentModelCatalog.kt` | models.json 解析与模型目录 |
 | `PiWorkspaceMaterializer.kt` | 工作区初始化、脚本部署 |
 | `BoxedAgentLikeScreen.kt` | Agent 聊天主界面 |

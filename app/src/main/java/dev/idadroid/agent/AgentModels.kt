@@ -97,6 +97,21 @@ data class PiUserConfig(
     val extraArgs: List<String> = emptyList()
 )
 
+@Serializable
+data class ConfigExport(
+    val defaultProvider: String = "",
+    val defaultModel: String = "",
+    val defaultThinkingLevel: String = "medium",
+    val enabledModels: String = "",
+    val settingsText: String = "{}",
+    val modelsText: String = "{}",
+    val envText: String = "{}",
+    val appendSystem: String = "",
+    val extraArgsText: String = "",
+    val version: Int = 1,
+    val exportedAt: Long = 0L
+)
+
 data class PiConfigSnapshot(
     val defaultProvider: String = "",
     val defaultModel: String = "",

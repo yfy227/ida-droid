@@ -15,23 +15,29 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.CloudDownload
+import androidx.compose.material.icons.rounded.CloudUpload
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Key
+import androidx.compose.material.icons.rounded.NetworkCheck
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Visibility
@@ -50,6 +56,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -57,6 +66,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -72,6 +82,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.idadroid.agent.PiConfigSnapshot
 import dev.idadroid.agent.parseAgentModelCatalog
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -157,6 +170,11 @@ fun AiConfigEditor(
     var editingProvider by remember { mutableStateOf<String?>(null) }
     var showAddDialog by remember { mutableStateOf(false) }
     var showRawJson by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val snackbarHost = remember { SnackbarHostState() }
+    var testingProviderId by remember { mutableStateOf<String?>(null) }
+    var showImportDialog by remember { mutableStateOf(false) }
+    var exportText by remember { mutableStateOf<String?>(null) }
 
     // IMPORTANT: plain Column, NOT LazyColumn — this composable is embedded
     // inside a LazyColumn item in PiSettingsTab. A nested LazyColumn crashes
@@ -188,18 +206,95 @@ fun AiConfigEditor(
                         modelCatalog = parseAgentModelCatalog(newJson)
                     ))
                     if (editingProvider == provider.id) editingProvider = null
-                }
+                },
+                onTestConnection = {
+                    testingProviderId = provider.id
+                    scope.launch {
+                        val result = withContext(Dispatchers.IO) {
+                            testProviderConnection(provider)
+                        }
+                        testingProviderId = null
+                        if (result.success) {
+                            val modelInfo = if (result.availableModels.isNotEmpty()) {
+                                "，发现 ${result.availableModels.size} 个可用模型"
+                            } else ""
+                            snackbarHost.showSnackbar(
+                                message = "✅ ${provider.displayName} 连接成功$modelInfo",
+                                duration = androidx.compose.material3.SnackbarDuration.Short
+                            )
+                        } else {
+                            snackbarHost.showSnackbar(
+                                message = "❌ ${provider.displayName}: ${result.message}",
+                                duration = androidx.compose.material3.SnackbarDuration.Long
+                            )
+                        }
+                    }
+                },
+                onFetchModels = {
+                    testingProviderId = "${provider.id}_fetch"
+                    scope.launch {
+                        val result = withContext(Dispatchers.IO) {
+                            testProviderConnection(provider)
+                        }
+                        testingProviderId = null
+                        if (result.success && result.availableModels.isNotEmpty()) {
+                            val existing = provider.models.map { it.id }.toSet()
+                            val newModels = result.availableModels.filter { it !in existing }
+                            if (newModels.isNotEmpty()) {
+                                val updated = provider.copy(models = provider.models + newModels.map { ModelConfig(it, provider.id, it) })
+                                val newProviders = parsed.providers.map { if (it.id == provider.id) updated else it }
+                                val newJson = buildModelsJson(newProviders)
+                                onSnapshotChange(snapshot.copy(
+                                    modelsText = newJson,
+                                    envText = rebuildEnv(parsed.env, newProviders),
+                                    modelCatalog = parseAgentModelCatalog(newJson)
+                                ))
+                                snackbarHost.showSnackbar("已拉取 ${newModels.size} 个新模型")
+                            } else {
+                                snackbarHost.showSnackbar("没有新模型可添加")
+                            }
+                        } else if (!result.success) {
+                            snackbarHost.showSnackbar("拉取失败: ${result.message}")
+                        } else {
+                            snackbarHost.showSnackbar("API 未返回模型列表")
+                        }
+                    }
+                },
+                isTesting = testingProviderId == provider.id || testingProviderId == "${provider.id}_fetch"
             )
         }
 
-        // ── Add provider button ──
-        OutlinedButton(
-            onClick = { showAddDialog = true },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
-            Text("添加 Provider")
+        // ── Add provider + Config actions row ──
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = { showAddDialog = true },
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("添加 Provider")
+            }
+            OutlinedButton(
+                onClick = {
+                    exportText = exportConfig(snapshot)
+                }
+            ) {
+                Icon(Icons.Rounded.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("导出")
+            }
+            OutlinedButton(
+                onClick = { showImportDialog = true }
+            ) {
+                Icon(Icons.Rounded.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("导入")
+            }
+        }
+
+        // Snackbar host for test/fetch/import/export feedback
+        SnackbarHost(hostState = snackbarHost) { data ->
+            Snackbar(data)
         }
 
         // ── Advanced: raw JSON ──
@@ -261,6 +356,67 @@ fun AiConfigEditor(
             }
         )
     }
+
+    // ── Export dialog ──
+    exportText?.let { json ->
+        AlertDialog(
+            onDismissRequest = { exportText = null },
+            title = { Text("导出配置") },
+            text = {
+                Column {
+                    Text("复制以下 JSON 保存备份:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(8.dp))
+                    Surface(
+                        tonalElevation = 2.dp,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp)
+                    ) {
+                        Text(
+                            json,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.padding(8.dp).verticalScroll(rememberScrollState())
+                        )
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { exportText = null }) { Text("关闭") } }
+        )
+    }
+
+    // ── Import dialog ──
+    if (showImportDialog) {
+        var importText by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showImportDialog = false },
+            title = { Text("导入配置") },
+            text = {
+                Column {
+                    Text("粘贴之前导出的 JSON:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = importText,
+                        onValueChange = { importText = it },
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp),
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val imported = parseImportedConfig(importText.trim())
+                    if (imported != null) {
+                        onSnapshotChange(imported)
+                        scope.launch { snackbarHost.showSnackbar("配置导入成功") }
+                        showImportDialog = false
+                    } else {
+                        scope.launch { snackbarHost.showSnackbar("配置解析失败，格式不正确") }
+                    }
+                }) { Text("导入") }
+            },
+            dismissButton = { TextButton(onClick = { showImportDialog = false }) { Text("取消") } }
+        )
+    }
 }
 
 // ─── Status banner ─────────────────────────────────────────────────────────────
@@ -298,7 +454,10 @@ private fun ProviderCard(
     isExpanded: Boolean,
     onToggleExpand: () -> Unit,
     onUpdate: (ProviderConfig) -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onTestConnection: () -> Unit = {},
+    onFetchModels: () -> Unit = {},
+    isTesting: Boolean = false
 ) {
     ElevatedCard(Modifier.fillMaxWidth()) {
         // Header — always visible
@@ -467,6 +626,44 @@ private fun ProviderCard(
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.error
                         )
+                    }
+                }
+
+                // ── Test & Fetch buttons ──
+                if (provider.apiKey.isNotBlank() && provider.baseUrl.isNotBlank()) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = onTestConnection,
+                            enabled = !isTesting,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            if (isTesting) {
+                                androidx.compose.material3.CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Icon(Icons.Rounded.NetworkCheck, contentDescription = null, modifier = Modifier.size(16.dp))
+                            }
+                            Spacer(Modifier.width(6.dp))
+                            Text("测试连接", fontSize = 12.sp)
+                        }
+                        OutlinedButton(
+                            onClick = onFetchModels,
+                            enabled = !isTesting,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            if (isTesting) {
+                                androidx.compose.material3.CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Icon(Icons.Rounded.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                            }
+                            Spacer(Modifier.width(6.dp))
+                            Text("拉取模型", fontSize = 12.sp)
+                        }
                     }
                 }
 
@@ -676,5 +873,128 @@ private fun validateApiKeyFormat(providerId: String, apiKey: String): Boolean {
         "xai" -> key.startsWith("xai-")
         "together" -> key.length >= 20
         else -> true // custom and unknown providers: skip validation
+    }
+}
+
+// ─── Connection testing & model fetching ──────────────────────────────────────
+
+private data class TestResult(
+    val success: Boolean,
+    val httpCode: Int,
+    val message: String,
+    val availableModels: List<String> = emptyList()
+)
+
+/**
+ * 测试 Provider 连接：向 /models 端点发送 GET 请求。
+ * 借鉴自 Operit 的 ModelConfigConnectionTester。
+ */
+private fun testProviderConnection(provider: ProviderConfig): TestResult {
+    return try {
+        val baseUrl = dev.idadroid.agent.EndpointCompleter.complete(provider.baseUrl, provider.id)
+        // 尝试 /models 端点（OpenAI 风格）
+        val modelsUrl = if (baseUrl.contains("/chat/completions")) {
+            baseUrl.removeSuffix("/chat/completions") + "/models"
+        } else if (baseUrl.contains("/v1")) {
+            baseUrl.removeSuffix("/") + "/models"
+        } else {
+            baseUrl.removeSuffix("/") + "/v1/models"
+        }
+
+        val url = java.net.URL(modelsUrl)
+        val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 10_000
+            readTimeout = 15_000
+            setRequestProperty("Authorization", "Bearer ${provider.apiKey}")
+            setRequestProperty("Content-Type", "application/json")
+            // Anthropic 需要特殊的 header
+            if (provider.id == "anthropic") {
+                setRequestProperty("x-api-key", provider.apiKey)
+                setRequestProperty("anthropic-version", "2023-06-01")
+            }
+        }
+
+        val code = conn.responseCode
+        val body = if (code in 200..299) {
+            conn.inputStream.bufferedReader().use { it.readText() }
+        } else {
+            conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+        }
+
+        if (code in 200..299) {
+            val models = parseModelsResponse(body)
+            TestResult(true, code, "连接成功", models)
+        } else {
+            val errMsg = parseErrorMessage(body) ?: "HTTP $code"
+            TestResult(false, code, errMsg)
+        }
+    } catch (e: java.net.UnknownHostException) {
+        TestResult(false, -1, "无法解析主机名: ${e.message}")
+    } catch (e: java.net.SocketTimeoutException) {
+        TestResult(false, -1, "连接超时")
+    } catch (e: Exception) {
+        TestResult(false, -1, e.message ?: "未知错误")
+    }
+}
+
+private fun parseModelsResponse(body: String): List<String> {
+    return try {
+        val parsed = kotlinx.serialization.json.Json.parseToJsonElement(body)
+        val obj = parsed as? kotlinx.serialization.json.JsonObject ?: return emptyList()
+        val data = obj["data"] as? kotlinx.serialization.json.JsonArray ?: return emptyList()
+        data.mapNotNull { item ->
+            (item as? kotlinx.serialization.json.JsonObject)?.let {
+                (it["id"] as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
+            }
+        }.filter { it.isNotBlank() }
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
+private fun parseErrorMessage(body: String): String? = try {
+    val parsed = kotlinx.serialization.json.Json.parseToJsonElement(body) as? kotlinx.serialization.json.JsonObject
+    parsed?.get("error")?.let { (it as? kotlinx.serialization.json.JsonObject)?.get("message")?.let { m -> (m as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull } }
+        ?: parsed?.get("message")?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull }
+} catch (_: Exception) { null }
+
+// ─── Config export / import ───────────────────────────────────────────────────
+
+private fun exportConfig(snapshot: PiConfigSnapshot): String {
+    val export = dev.idadroid.agent.ConfigExport(
+        defaultProvider = snapshot.defaultProvider,
+        defaultModel = snapshot.defaultModel,
+        defaultThinkingLevel = snapshot.defaultThinkingLevel,
+        enabledModels = snapshot.enabledModels,
+        settingsText = snapshot.settingsText,
+        modelsText = snapshot.modelsText,
+        envText = snapshot.envText,
+        appendSystem = snapshot.appendSystem,
+        extraArgsText = snapshot.extraArgsText,
+        exportedAt = System.currentTimeMillis()
+    )
+    return kotlinx.serialization.json.Json { prettyPrint = true; encodeDefaults = true }
+        .encodeToString(dev.idadroid.agent.ConfigExport.serializer(), export)
+}
+
+private fun parseImportedConfig(json: String): PiConfigSnapshot? {
+    return try {
+        val export = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+            .decodeFromString(dev.idadroid.agent.ConfigExport.serializer(), json)
+        PiConfigSnapshot(
+            defaultProvider = export.defaultProvider,
+            defaultModel = export.defaultModel,
+            defaultThinkingLevel = export.defaultThinkingLevel.ifBlank { "medium" },
+            enabledModels = export.enabledModels,
+            settingsText = export.settingsText.ifBlank { "{}" },
+            modelsText = export.modelsText.ifBlank { "{}" },
+            envText = export.envText.ifBlank { "{}" },
+            appendSystem = export.appendSystem,
+            extraArgsText = export.extraArgsText,
+            modelCatalog = dev.idadroid.agent.parseAgentModelCatalog(export.modelsText.ifBlank { "{}" })
+        )
+    } catch (_: Exception) {
+        null
     }
 }

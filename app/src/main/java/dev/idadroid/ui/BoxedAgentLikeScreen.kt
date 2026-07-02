@@ -2476,7 +2476,15 @@ private fun mergeUiModels(primary: List<PiModel>, fallback: List<PiModel>): List
 }
 
 @Composable private fun TinyMetaChip(text: String, selected: Boolean = false) { val colors = MaterialTheme.colorScheme; Surface(shape = RoundedCornerShape(999.dp), color = if (selected) colors.primary.copy(alpha = .12f) else colors.surfaceContainerHighest, contentColor = if (selected) colors.primary else colors.onSurfaceVariant, border = BorderStroke(1.dp, if (selected) colors.primary.copy(alpha = .28f) else colors.outlineVariant)) { Text(text, Modifier.padding(horizontal = 6.dp, vertical = 2.dp), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) } }
-private fun thinkingDescription(level: String): String = when (level) { "off" -> "关闭扩展思考"; "minimal" -> "最少推理"; "low" -> "低强度思考"; "medium" -> "默认平衡"; "high" -> "更强推理"; "xhigh" -> "超高推理"; else -> "" }
+private fun thinkingDescription(level: String): String = when (level) {
+    "off" -> "关闭扩展思考 — 直接回答，速度最快"
+    "minimal" -> "极少推理 — 仅快速判断，适合简单任务"
+    "low" -> "低强度思考 — 基本分析，适合常规逆向任务"
+    "medium" -> "默认平衡 — 推理深度与速度兼顾，推荐大多数场景"
+    "high" -> "高强度思考 — 深入分析，适合复杂逻辑和加壳混淆"
+    "xhigh" -> "极致推理 — 最大深度推理，适合最难的问题和大型二进制"
+    else -> ""
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
