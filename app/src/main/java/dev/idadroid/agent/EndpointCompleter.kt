@@ -14,15 +14,6 @@ import java.net.URL
  */
 object EndpointCompleter {
 
-    /** Provider ID → 是否需要特殊处理端点 */
-    private val anthropicProviders = setOf("anthropic")
-    private val geminiProviders = setOf("google")
-    private val openaiStyleProviders = setOf(
-        "openai", "deepseek", "openrouter", "moonshot", "dashscope",
-        "siliconflow", "mistral", "groq", "xai", "together",
-        "volcengine", "baidu", "hunyuan", "custom"
-    )
-
     fun complete(endpoint: String, providerId: String = ""): String {
         val trimmed = endpoint.trim()
         if (trimmed.isEmpty()) return trimmed
@@ -32,9 +23,9 @@ object EndpointCompleter {
 
         val withoutSlash = trimmed.removeSuffix("/")
 
-        return when {
-            providerId in anthropicProviders -> completeAnthropic(withoutSlash)
-            providerId in geminiProviders -> trimmed // Gemini URL 格式特殊，不补全
+        return when (providerId) {
+            "anthropic" -> completeAnthropic(withoutSlash)
+            "google" -> trimmed // Gemini URL 格式特殊，不补全
             else -> completeOpenAiStyle(withoutSlash)
         }
     }

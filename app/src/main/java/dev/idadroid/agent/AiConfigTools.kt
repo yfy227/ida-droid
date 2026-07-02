@@ -74,66 +74,36 @@ class AiConfigTools(
             if (apiKey.isBlank()) error("API Key 为空")
             if (baseUrl.isBlank()) error("Base URL 为空")
 
+            // Gemini: GET /v1beta/models?key=KEY — 不需要 POST
+            if (providerId == "google") {
+                return@runCatching testGeminiConnectionInternal(baseUrl, apiKey)
+            }
+
+            // Anthropic / OpenAI 风格: POST 最小请求
             val completedUrl = EndpointCompleter.complete(baseUrl, providerId)
-            val url = URL(completedUrl)
-            val conn = (url.openConnection() as HttpURLConnection).apply {
+            val conn = (URL(completedUrl).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 15_000
                 readTimeout = 30_000
                 requestMethod = "POST"
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json")
-
-                // Provider 特定的认证头
                 when (providerId) {
                     "anthropic" -> {
                         setRequestProperty("x-api-key", apiKey)
                         setRequestProperty("anthropic-version", "2023-06-01")
                     }
-                    "google" -> {
-                        // Gemini uses API key as query parameter
-                    }
-                    else -> {
-                        setRequestProperty("Authorization", "Bearer $apiKey")
-                    }
+                    else -> setRequestProperty("Authorization", "Bearer $apiKey")
                 }
             }
 
-            // 构造最小测试请求
             val testModel = modelId ?: defaultModelForProvider(providerId)
-            val requestBody = when (providerId) {
-                "anthropic" -> """{"model":"$testModel","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"""
-                "google" -> {
-                    // Gemini uses GET /v1beta/models?key=KEY for testing
-                    val base = baseUrl.trimEnd('/')
-                    val geminiUrl = if (base.contains("/v1beta")) {
-                        URL("$base/models?key=$apiKey")
-                    } else {
-                        URL("$base/v1beta/models?key=$apiKey")
-                    }
-                    val gemConn = (geminiUrl.openConnection() as HttpURLConnection).apply {
-                        connectTimeout = 15_000
-                        readTimeout = 30_000
-                        requestMethod = "GET"
-                    }
-                    val code = gemConn.responseCode
-                    val available = if (code in 200..299) {
-                        gemConn.inputStream.bufferedReader().use { it.readText() }
-                    } else {
-                        gemConn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
-                    }
-                    gemConn.disconnect()
-                    val models = parseModelList(available, "google")
-                    return@runCatching TestResult(
-                        success = code in 200..299,
-                        httpCode = code,
-                        message = if (code in 200..299) "连接成功" else "HTTP $code",
-                        availableModels = models
-                    )
-                }
-                else -> """{"model":"$testModel","max_tokens":1,"messages":[{"role":"user","content":"hi"}],"stream":false}"""
+            val requestBody = if (providerId == "anthropic") {
+                """{"model":"$testModel","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"""
+            } else {
+                """{"model":"$testModel","max_tokens":1,"messages":[{"role":"user","content":"hi"}],"stream":false}"""
             }
 
-            conn.outputStream.use { it.write(requestResponseToBytes(requestBody)) }
+            conn.outputStream.use { it.write(requestBody.toByteArray()) }
 
             val code = conn.responseCode
             val responseBody = if (code in 200..299) {
@@ -144,19 +114,49 @@ class AiConfigTools(
             conn.disconnect()
 
             val success = code in 200..299
-            val message = if (success) {
-                "连接成功"
-            } else {
-                extractErrorMessage(responseBody) ?: "HTTP $code"
-            }
+            val message = if (success) "连接成功"
+                else extractErrorMessage(responseBody) ?: "HTTP $code"
+
+            // Anthropic 400 可能是模型名过期但 Key 有效
+            val effectiveSuccess = success || (providerId == "anthropic" && code == 400)
+            val effectiveMessage = if (providerId == "anthropic" && code == 400 && !success)
+                "连接成功（Key 有效，模型可能需要更新）" else message
 
             TestResult(
-                success = success,
+                success = effectiveSuccess,
                 httpCode = code,
-                message = message,
-                availableModels = if (success) emptyList() else emptyList() // 不在测试请求中解析模型
+                message = effectiveMessage
             )
         }
+    }
+
+    private fun testGeminiConnectionInternal(baseUrl: String, apiKey: String): TestResult {
+        val base = baseUrl.trimEnd('/')
+        val geminiUrl = if (base.contains("/v1beta")) {
+            "$base/models?key=$apiKey"
+        } else {
+            "$base/v1beta/models?key=$apiKey"
+        }
+        val conn = (URL(geminiUrl).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15_000
+            readTimeout = 30_000
+            requestMethod = "GET"
+        }
+        val code = conn.responseCode
+        val body = if (code in 200..299) {
+            conn.inputStream.bufferedReader().use { it.readText() }
+        } else {
+            conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+        }
+        conn.disconnect()
+
+        val models = if (code in 200..299) parseModelList(body, "google") else emptyList()
+        return TestResult(
+            success = code in 200..299,
+            httpCode = code,
+            message = if (code in 200..299) "连接成功" else extractErrorMessage(body) ?: "HTTP $code",
+            availableModels = models
+        )
     }
 
     /**
@@ -254,8 +254,6 @@ class AiConfigTools(
         parsed["error"]?.jsonObject?.get("message")?.jsonPrimitive?.contentOrNull
             ?: parsed["message"]?.jsonPrimitive?.contentOrNull
     } catch (_: Exception) { null }
-
-    private fun requestResponseToBytes(s: String): ByteArray = s.toByteArray(Charsets.UTF_8)
 }
 
 data class TestResult(
