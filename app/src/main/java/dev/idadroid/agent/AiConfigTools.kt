@@ -8,8 +8,6 @@ import java.net.URL
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -105,8 +103,13 @@ class AiConfigTools(
             val requestBody = when (providerId) {
                 "anthropic" -> """{"model":"$testModel","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"""
                 "google" -> {
-                    // Gemini uses different format
-                    val geminiUrl = URL("${baseUrl.trimEnd('/')}/v1beta/models?key=$apiKey")
+                    // Gemini uses GET /v1beta/models?key=KEY for testing
+                    val base = baseUrl.trimEnd('/')
+                    val geminiUrl = if (base.contains("/v1beta")) {
+                        URL("$base/models?key=$apiKey")
+                    } else {
+                        URL("$base/v1beta/models?key=$apiKey")
+                    }
                     val gemConn = (geminiUrl.openConnection() as HttpURLConnection).apply {
                         connectTimeout = 15_000
                         readTimeout = 30_000
@@ -157,7 +160,8 @@ class AiConfigTools(
     }
 
     /**
-     * 从 API 拉取可用模型列表（仅支持 OpenAI 兼容的 /v1/models 端点）。
+     * 从 API 拉取可用模型列表。
+     * 支持 OpenAI 风格 /v1/models、Anthropic /v1/models、Gemini /v1beta/models。
      */
     suspend fun fetchModelList(
         providerId: String,
@@ -168,17 +172,18 @@ class AiConfigTools(
             if (apiKey.isBlank()) error("API Key 为空")
             if (baseUrl.isBlank()) error("Base URL 为空")
 
-            val modelsUrl = when {
-                providerId in setOf("anthropic") -> {
-                    // Anthropic doesn't have a public /v1/models endpoint in the same way
-                    error("Anthropic 不支持模型列表拉取，请手动添加")
+            val modelsUrl = when (providerId) {
+                "google" -> {
+                    val base = baseUrl.trimEnd('/')
+                    if (base.contains("/v1beta")) "$base/models?key=$apiKey"
+                    else "$base/v1beta/models?key=$apiKey"
                 }
-                providerId == "google" -> {
-                    "${baseUrl.trimEnd('/')}/v1beta/models?key=$apiKey"
+                "anthropic" -> {
+                    val base = baseUrl.trimEnd('/').removeSuffix("/v1")
+                    "$base/v1/models"
                 }
                 else -> {
                     val base = baseUrl.trimEnd('/')
-                    // 确保 URL 以 /v1 结尾
                     val v1Base = if (base.endsWith("/v1")) base else "$base/v1"
                     "$v1Base/models"
                 }
@@ -189,8 +194,13 @@ class AiConfigTools(
                 connectTimeout = 15_000
                 readTimeout = 30_000
                 requestMethod = "GET"
-                if (providerId != "google") {
-                    setRequestProperty("Authorization", "Bearer $apiKey")
+                when (providerId) {
+                    "anthropic" -> {
+                        setRequestProperty("x-api-key", apiKey)
+                        setRequestProperty("anthropic-version", "2023-06-01")
+                    }
+                    "google" -> { /* key is in URL */ }
+                    else -> setRequestProperty("Authorization", "Bearer $apiKey")
                 }
             }
 

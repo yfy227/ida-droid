@@ -219,13 +219,11 @@ fun AiConfigEditor(
                                 "，发现 ${result.availableModels.size} 个可用模型"
                             } else ""
                             snackbarHost.showSnackbar(
-                                message = "✅ ${provider.displayName} 连接成功$modelInfo",
-                                duration = androidx.compose.material3.SnackbarDuration.Short
+                                "✅ ${provider.displayName} 连接成功$modelInfo"
                             )
                         } else {
                             snackbarHost.showSnackbar(
-                                message = "❌ ${provider.displayName}: ${result.message}",
-                                duration = androidx.compose.material3.SnackbarDuration.Long
+                                "❌ ${provider.displayName}: ${result.message}"
                             )
                         }
                     }
@@ -233,13 +231,13 @@ fun AiConfigEditor(
                 onFetchModels = {
                     testingProviderId = "${provider.id}_fetch"
                     scope.launch {
-                        val result = withContext(Dispatchers.IO) {
-                            testProviderConnection(provider)
+                        val models = withContext(Dispatchers.IO) {
+                            fetchAvailableModels(provider)
                         }
                         testingProviderId = null
-                        if (result.success && result.availableModels.isNotEmpty()) {
+                        if (models.isNotEmpty()) {
                             val existing = provider.models.map { it.id }.toSet()
-                            val newModels = result.availableModels.filter { it !in existing }
+                            val newModels = models.filter { it !in existing }
                             if (newModels.isNotEmpty()) {
                                 val updated = provider.copy(models = provider.models + newModels.map { ModelConfig(it, provider.id, it) })
                                 val newProviders = parsed.providers.map { if (it.id == provider.id) updated else it }
@@ -251,12 +249,10 @@ fun AiConfigEditor(
                                 ))
                                 snackbarHost.showSnackbar("已拉取 ${newModels.size} 个新模型")
                             } else {
-                                snackbarHost.showSnackbar("没有新模型可添加")
+                                snackbarHost.showSnackbar("没有新模型可添加（全部已存在）")
                             }
-                        } else if (!result.success) {
-                            snackbarHost.showSnackbar("拉取失败: ${result.message}")
                         } else {
-                            snackbarHost.showSnackbar("API 未返回模型列表")
+                            snackbarHost.showSnackbar("拉取失败或 API 未返回模型列表")
                         }
                     }
                 },
@@ -886,55 +882,128 @@ private data class TestResult(
 )
 
 /**
- * 测试 Provider 连接：向 /models 端点发送 GET 请求。
- * 借鉴自 Operit 的 ModelConfigConnectionTester。
+ * 测试 Provider 连接。
+ * 策略:
+ * - OpenAI 风格 (大多数 Provider): GET /v1/models — 200 即成功，附带模型列表
+ * - Anthropic: POST /v1/messages 发一个最小请求 — 200 或 400(key问题) 判断连通性
+ * - Google Gemini: GET /v1beta/models?key=KEY — 200 即成功
+ * - 其他: 尝试 GET /models，失败则尝试 GET / 看是否可达
  */
 private fun testProviderConnection(provider: ProviderConfig): TestResult {
     return try {
-        val baseUrl = dev.idadroid.agent.EndpointCompleter.complete(provider.baseUrl, provider.id)
-        // 尝试 /models 端点（OpenAI 风格）
-        val modelsUrl = if (baseUrl.contains("/chat/completions")) {
-            baseUrl.removeSuffix("/chat/completions") + "/models"
-        } else if (baseUrl.contains("/v1")) {
-            baseUrl.removeSuffix("/") + "/models"
-        } else {
-            baseUrl.removeSuffix("/") + "/v1/models"
-        }
-
-        val url = java.net.URL(modelsUrl)
-        val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 10_000
-            readTimeout = 15_000
-            setRequestProperty("Authorization", "Bearer ${provider.apiKey}")
-            setRequestProperty("Content-Type", "application/json")
-            // Anthropic 需要特殊的 header
-            if (provider.id == "anthropic") {
-                setRequestProperty("x-api-key", provider.apiKey)
-                setRequestProperty("anthropic-version", "2023-06-01")
-            }
-        }
-
-        val code = conn.responseCode
-        val body = if (code in 200..299) {
-            conn.inputStream.bufferedReader().use { it.readText() }
-        } else {
-            conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
-        }
-
-        if (code in 200..299) {
-            val models = parseModelsResponse(body)
-            TestResult(true, code, "连接成功", models)
-        } else {
-            val errMsg = parseErrorMessage(body) ?: "HTTP $code"
-            TestResult(false, code, errMsg)
+        when (provider.id) {
+            "anthropic" -> testAnthropicConnection(provider)
+            "google" -> testGeminiConnection(provider)
+            else -> testOpenAiStyleConnection(provider)
         }
     } catch (e: java.net.UnknownHostException) {
         TestResult(false, -1, "无法解析主机名: ${e.message}")
     } catch (e: java.net.SocketTimeoutException) {
         TestResult(false, -1, "连接超时")
+    } catch (e: javax.net.ssl.SSLException) {
+        TestResult(false, -1, "SSL 错误: ${e.message}")
     } catch (e: Exception) {
         TestResult(false, -1, e.message ?: "未知错误")
+    }
+}
+
+/** OpenAI 风格: GET /models */
+private fun testOpenAiStyleConnection(provider: ProviderConfig): TestResult {
+    val baseUrl = dev.idadroid.agent.EndpointCompleter.complete(provider.baseUrl, provider.id)
+    val modelsUrl = when {
+        baseUrl.contains("/chat/completions") -> baseUrl.removeSuffix("/chat/completions") + "/models"
+        baseUrl.contains("/v1/") -> baseUrl.substringBefore("/v1/") + "/v1/models"
+        baseUrl.endsWith("/v1") -> baseUrl + "/models"
+        else -> baseUrl.removeSuffix("/") + "/v1/models"
+    }
+
+    val conn = (java.net.URL(modelsUrl).openConnection() as java.net.HttpURLConnection).apply {
+        requestMethod = "GET"
+        connectTimeout = 10_000
+        readTimeout = 15_000
+        setRequestProperty("Authorization", "Bearer ${provider.apiKey}")
+        setRequestProperty("Content-Type", "application/json")
+    }
+
+    val code = conn.responseCode
+    val body = readBody(conn, code)
+
+    return if (code in 200..299) {
+        val models = parseModelsResponse(body)
+        TestResult(true, code, "连接成功", models)
+    } else {
+        TestResult(false, code, parseErrorMessage(body) ?: "HTTP $code")
+    }
+}
+
+/** Anthropic: POST /v1/messages 最小请求 */
+private fun testAnthropicConnection(provider: ProviderConfig): TestResult {
+    val baseUrl = provider.baseUrl.trim().removeSuffix("/")
+    val messagesUrl = if (baseUrl.endsWith("/v1")) "$baseUrl/messages" else "$baseUrl/v1/messages"
+
+    val minBody = """{"model":"claude-3-5-haiku-20241022","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"""
+    val conn = (java.net.URL(messagesUrl).openConnection() as java.net.HttpURLConnection).apply {
+        requestMethod = "POST"
+        connectTimeout = 10_000
+        readTimeout = 15_000
+        doOutput = true
+        setRequestProperty("x-api-key", provider.apiKey)
+        setRequestProperty("anthropic-version", "2023-06-01")
+        setRequestProperty("Content-Type", "application/json")
+    }
+    conn.outputStream.use { it.write(minBody.toByteArray()) }
+
+    val code = conn.responseCode
+    val body = readBody(conn, code)
+
+    return if (code in 200..299) {
+        // 连接成功，尝试拉取模型列表（Anthropic 有 /v1/models 端点）
+        val models = try { fetchAnthropicModelsDirect(provider) } catch (_: Exception) { emptyList() }
+        TestResult(true, code, "连接成功", models)
+    } else if (code == 401 || code == 403) {
+        TestResult(false, code, "API Key 无效或权限不足 (HTTP $code)")
+    } else if (code == 400) {
+        // 400 可能是 model 不存在但 Key 有效
+        TestResult(true, code, "连接成功（Key 有效，模型可能需要更新）")
+    } else {
+        TestResult(false, code, parseErrorMessage(body) ?: "HTTP $code")
+    }
+}
+
+/** Google Gemini: GET /v1beta/models?key=KEY */
+private fun testGeminiConnection(provider: ProviderConfig): TestResult {
+    val baseUrl = provider.baseUrl.trim().removeSuffix("/")
+    // Gemini 的 models 列表端点: GET /v1beta/models?key=API_KEY
+    val modelsUrl = if (baseUrl.contains("/v1beta")) {
+        "$baseUrl/models?key=${provider.apiKey}"
+    } else {
+        "$baseUrl/v1beta/models?key=${provider.apiKey}"
+    }
+
+    val conn = (java.net.URL(modelsUrl).openConnection() as java.net.HttpURLConnection).apply {
+        requestMethod = "GET"
+        connectTimeout = 10_000
+        readTimeout = 15_000
+        setRequestProperty("Content-Type", "application/json")
+    }
+
+    val code = conn.responseCode
+    val body = readBody(conn, code)
+
+    return if (code in 200..299) {
+        // Gemini 返回 { "models": [{ "name": "models/gemini-1.5-flash", ... }] }
+        val models = parseGeminiModelsResponse(body)
+        TestResult(true, code, "连接成功", models)
+    } else {
+        TestResult(false, code, parseErrorMessage(body) ?: "HTTP $code")
+    }
+}
+
+private fun readBody(conn: java.net.HttpURLConnection, code: Int): String {
+    return if (code in 200..299) {
+        conn.inputStream?.bufferedReader()?.use { it.readText() } ?: ""
+    } else {
+        conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
     }
 }
 
@@ -953,11 +1022,101 @@ private fun parseModelsResponse(body: String): List<String> {
     }
 }
 
+/** Gemini 返回格式: { "models": [{ "name": "models/gemini-1.5-flash" }] } */
+private fun parseGeminiModelsResponse(body: String): List<String> {
+    return try {
+        val parsed = kotlinx.serialization.json.Json.parseToJsonElement(body)
+        val obj = parsed as? kotlinx.serialization.json.JsonObject ?: return emptyList()
+        val models = obj["models"] as? kotlinx.serialization.json.JsonArray ?: return emptyList()
+        models.mapNotNull { item ->
+            (item as? kotlinx.serialization.json.JsonObject)?.let {
+                (it["name"] as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
+                    ?.removePrefix("models/")
+            }
+        }.filter { it.isNotBlank() }
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
 private fun parseErrorMessage(body: String): String? = try {
     val parsed = kotlinx.serialization.json.Json.parseToJsonElement(body) as? kotlinx.serialization.json.JsonObject
     parsed?.get("error")?.let { (it as? kotlinx.serialization.json.JsonObject)?.get("message")?.let { m -> (m as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull } }
         ?: parsed?.get("message")?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull }
 } catch (_: Exception) { null }
+
+/**
+ * 直接从 API 拉取模型列表（不做连接测试）。
+ * - OpenAI 风格: GET /v1/models
+ * - Anthropic: GET /v1/models (需要 x-api-key header)
+ * - Gemini: GET /v1beta/models?key=KEY
+ */
+private fun fetchAvailableModels(provider: ProviderConfig): List<String> {
+    return try {
+        when (provider.id) {
+            "google" -> fetchGeminiModels(provider)
+            "anthropic" -> fetchAnthropicModelsDirect(provider)
+            else -> fetchOpenAiStyleModels(provider)
+        }
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
+private fun fetchOpenAiStyleModels(provider: ProviderConfig): List<String> {
+    val base = provider.baseUrl.trim().removeSuffix("/")
+    val modelsUrl = when {
+        base.contains("/chat/completions") -> base.removeSuffix("/chat/completions") + "/models"
+        base.endsWith("/v1") -> base + "/models"
+        base.contains("/v1/") -> base.substringBefore("/v1/") + "/v1/models"
+        else -> base + "/v1/models"
+    }
+    val conn = (java.net.URL(modelsUrl).openConnection() as java.net.HttpURLConnection).apply {
+        requestMethod = "GET"
+        connectTimeout = 10_000
+        readTimeout = 15_000
+        setRequestProperty("Authorization", "Bearer ${provider.apiKey}")
+    }
+    if (conn.responseCode !in 200..299) return emptyList()
+    val body = conn.inputStream.bufferedReader().use { it.readText() }
+    conn.disconnect()
+    parseModelsResponse(body)
+}
+
+private fun fetchAnthropicModelsDirect(provider: ProviderConfig): List<String> {
+    val base = provider.baseUrl.trim().removeSuffix("/").removeSuffix("/v1")
+    val modelsUrl = "$base/v1/models"
+    val conn = (java.net.URL(modelsUrl).openConnection() as java.net.HttpURLConnection).apply {
+        requestMethod = "GET"
+        connectTimeout = 10_000
+        readTimeout = 15_000
+        setRequestProperty("x-api-key", provider.apiKey)
+        setRequestProperty("anthropic-version", "2023-06-01")
+    }
+    if (conn.responseCode !in 200..299) return emptyList()
+    val body = conn.inputStream.bufferedReader().use { it.readText() }
+    conn.disconnect()
+    // Anthropic uses the same { "data": [{ "id": "..." }] } format as OpenAI
+    parseModelsResponse(body)
+}
+
+private fun fetchGeminiModels(provider: ProviderConfig): List<String> {
+    val base = provider.baseUrl.trim().removeSuffix("/")
+    val modelsUrl = if (base.contains("/v1beta")) {
+        "$base/models?key=${provider.apiKey}"
+    } else {
+        "$base/v1beta/models?key=${provider.apiKey}"
+    }
+    val conn = (java.net.URL(modelsUrl).openConnection() as java.net.HttpURLConnection).apply {
+        requestMethod = "GET"
+        connectTimeout = 10_000
+        readTimeout = 15_000
+    }
+    if (conn.responseCode !in 200..299) return emptyList()
+    val body = conn.inputStream.bufferedReader().use { it.readText() }
+    conn.disconnect()
+    parseGeminiModelsResponse(body)
+}
 
 // ─── Config export / import ───────────────────────────────────────────────────
 
