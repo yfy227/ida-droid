@@ -34,7 +34,7 @@ class PiAgentManager(
     private val appContext = context.applicationContext
     private val settings = dev.idadroid.settings.IdaDroidSettings(appContext)
     /** 用户设置的工作区路径 (proot 内可见路径)，默认 /root/pi_workspace */
-    private val workspaceProotPath: String get() = settings.envSettings.workspacePath.ifBlank { dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH }
+    private val workspaceProotPath: String get() = settings.envSettings.value.workspacePath.ifBlank { dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH }
     /** 工作区在主机文件系统上的根目录 */
     private val workspaceHostRoot: File get() = File(paths.rootfsDir, workspaceProotPath.removePrefix("/").removePrefix("root/"))
     private val repo = AgentSessionRepository(paths)

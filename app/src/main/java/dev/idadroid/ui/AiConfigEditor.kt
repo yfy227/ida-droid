@@ -77,6 +77,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 // ─── Provider catalog ──────────────────────────────────────────────────────────
 
@@ -243,11 +244,15 @@ fun AiConfigEditor(
     var testingProvider by remember { mutableStateOf<String?>(null) }
     var showModelPicker by remember { mutableStateOf(false) }
 
-    // 当前选中的 provider (默认取第一个或 defaultProvider)
+    // 当前选中的 provider — 始终是 ProviderConfig 类型
     val currentProvider = remember(parsed.providers, snapshot.defaultProvider) {
         parsed.providers.firstOrNull { it.id == snapshot.defaultProvider }
             ?: parsed.providers.firstOrNull()
-            ?: PROVIDER_PRESETS.first()
+            ?: run {
+                // 没有已配置的 provider，用第一个预设创建一个空的
+                val p = PROVIDER_PRESETS.first()
+                ProviderConfig(id = p.id, displayName = p.displayName, baseUrl = p.baseUrl, envKey = p.envKey, color = p.color, apiKey = "", models = emptyList())
+            }
     }
     val preset = presetById(currentProvider.id) ?: PROVIDER_PRESETS.last()
 
