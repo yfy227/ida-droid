@@ -10,15 +10,21 @@ class AgentSessionRepository(
     private val paths: EnvironmentPaths
 ) {
     private val storeFile get() = java.io.File(paths.rootfsDir, "root/pi_workspace/.idadroid/agent-sessions.json")
+    // Protects all read/write access to storeFile so that concurrent coroutines don't race.
+    private val lock = Any()
 
-    fun loadStore(): AgentSessionStore = runCatching {
-        if (!storeFile.isFile) return AgentSessionStore()
-        JsonFormats.pretty.decodeFromString<AgentSessionStore>(storeFile.readText())
-    }.getOrDefault(AgentSessionStore())
+    fun loadStore(): AgentSessionStore = synchronized(lock) {
+        runCatching {
+            if (!storeFile.isFile) return@synchronized AgentSessionStore()
+            JsonFormats.pretty.decodeFromString<AgentSessionStore>(storeFile.readText())
+        }.getOrDefault(AgentSessionStore())
+    }
 
-    fun saveStore(store: AgentSessionStore) {
+    fun saveStore(store: AgentSessionStore) = synchronized(lock) {
         storeFile.parentFile?.mkdirs()
-        storeFile.writeText(JsonFormats.pretty.encodeToString(store))
+        val tmp = java.io.File(storeFile.parentFile, "${storeFile.name}.tmp")
+        tmp.writeText(JsonFormats.pretty.encodeToString(store))
+        tmp.renameTo(storeFile)
     }
 
     fun listSessions(): List<AgentSessionRecord> = loadStore().sessions

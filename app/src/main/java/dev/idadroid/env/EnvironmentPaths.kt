@@ -25,7 +25,7 @@ class EnvironmentPaths private constructor(
     val validateLog: File get() = File(envDir, "validate.log")
     val logsDir: File get() = File(envDir, "logs")
 
-    fun stagingEnvDir(timestampMillis: Long = System.currentTimeMillis()): File =
+    fun stagingEnvDir(timestampMillis: Long): File =
         File(envsDir, ".importing-$envId-$timestampMillis")
 
     fun stagingRootfsDir(stagingEnvDir: File): File = File(stagingEnvDir, "rootfs")

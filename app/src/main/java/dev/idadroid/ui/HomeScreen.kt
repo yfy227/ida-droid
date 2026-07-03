@@ -111,6 +111,8 @@ fun MainContent(
     onStopMcp: () -> Unit,
     onRestartMcp: (IdaMcpLaunchSettings) -> Unit,
     onShowMcpLog: () -> Unit,
+    onToggleMcpMonitoring: (Boolean) -> Unit = {},
+    onMcpHealthCheck: () -> Unit = {},
     onRevalidate: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -193,7 +195,9 @@ fun MainContent(
                 onStartMcp = onStartMcp,
                 onStopMcp = onStopMcp,
                 onRestartMcp = onRestartMcp,
-                onShowMcpLog = onShowMcpLog
+                onShowMcpLog = onShowMcpLog,
+                onToggleMonitoring = onToggleMcpMonitoring,
+                onHealthCheck = onMcpHealthCheck
             )
         }
         HomePanelOverlay(

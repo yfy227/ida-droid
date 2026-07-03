@@ -13,10 +13,10 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -69,7 +69,7 @@ class PiRpcRuntime(
         waitForExit(started)
 
         emit(PiRuntimeEvent.Status("running"))
-        runCatching { getState(timeoutMs = 30_000) }
+        runCatching { getState(timeoutMs = 60_000) }
     }
 
     suspend fun stop() = withContext(Dispatchers.IO) {
@@ -103,20 +103,20 @@ class PiRpcRuntime(
                 }))
             }
         }
-        return send(payload, timeoutMs = 120_000)
+        return send(payload, timeoutMs = 1_800_000)
     }
 
-    suspend fun steer(message: String): JsonElement = send(buildJsonObject { put("type", "steer"); put("message", message) }, timeoutMs = 120_000)
-    suspend fun followUp(message: String): JsonElement = send(buildJsonObject { put("type", "follow_up"); put("message", message) }, timeoutMs = 120_000)
-    suspend fun abort(): JsonElement = send(buildJsonObject { put("type", "abort") }, timeoutMs = 5_000)
-    suspend fun getState(timeoutMs: Long = 120_000): JsonElement = send(buildJsonObject { put("type", "get_state") }, timeoutMs = timeoutMs)
-    suspend fun getMessages(): JsonElement = send(buildJsonObject { put("type", "get_messages") }, timeoutMs = 120_000)
+    suspend fun steer(message: String): JsonElement = send(buildJsonObject { put("type", "steer"); put("message", message) }, timeoutMs = 1_800_000)
+    suspend fun followUp(message: String): JsonElement = send(buildJsonObject { put("type", "follow_up"); put("message", message) }, timeoutMs = 1_800_000)
+    suspend fun abort(): JsonElement = send(buildJsonObject { put("type", "abort") }, timeoutMs = 10_000)
+    suspend fun getState(timeoutMs: Long = 60_000): JsonElement = send(buildJsonObject { put("type", "get_state") }, timeoutMs = timeoutMs)
+    suspend fun getMessages(): JsonElement = send(buildJsonObject { put("type", "get_messages") }, timeoutMs = 60_000)
     suspend fun getStats(): JsonElement = send(buildJsonObject { put("type", "get_session_stats") }, timeoutMs = 30_000)
     suspend fun availableModels(): JsonElement = send(buildJsonObject { put("type", "get_available_models") }, timeoutMs = 30_000)
     suspend fun setModel(provider: String, modelId: String): JsonElement = send(buildJsonObject { put("type", "set_model"); put("provider", provider); put("modelId", modelId) }, timeoutMs = 30_000)
     suspend fun setThinkingLevel(level: String): JsonElement = send(buildJsonObject { put("type", "set_thinking_level"); put("level", level) }, timeoutMs = 30_000)
     suspend fun setAutoCompaction(enabled: Boolean): JsonElement = send(buildJsonObject { put("type", "set_auto_compaction"); put("enabled", enabled) }, timeoutMs = 30_000)
-    suspend fun compact(customInstructions: String? = null): JsonElement = send(buildJsonObject { put("type", "compact"); customInstructions?.takeIf { it.isNotBlank() }?.let { put("customInstructions", it) } }, timeoutMs = 600_000)
+    suspend fun compact(customInstructions: String? = null): JsonElement = send(buildJsonObject { put("type", "compact"); customInstructions?.takeIf { it.isNotBlank() }?.let { put("customInstructions", it) } }, timeoutMs = 1_800_000)
 
     suspend fun send(command: JsonObject, timeoutMs: Long = 120_000): JsonElement {
         if (!isActive()) start()
@@ -130,14 +130,26 @@ class PiRpcRuntime(
             out.write("\n")
             out.flush()
         }
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (System.currentTimeMillis() < deadline) {
-            if (deferred.isCompleted) return deferred.await()
-            delay(50)
+        val commandType = command["type"]?.jsonPrimitive?.contentOrNull ?: "unknown"
+        try {
+            return withTimeout(timeoutMs) { deferred.await() }
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            // Remove the deferred first; only complete it if we actually removed it
+            // (another code path may have already removed + completed it).
+            val removed = pending.remove(id)
+            val alive = isActive()
+            val tail = stderrTail().takeLast(500)
+            val msg = buildString {
+                append("RPC command timed out: ").append(commandType)
+                append(" (").append(timeoutMs / 1000).append("s)")
+                if (!alive) append("; agent process is no longer running")
+                if (tail.isNotBlank()) {
+                    append("; recent stderr: ").append(tail.replace('\n', ' ').trim())
+                }
+            }
+            removed?.completeExceptionally(IllegalStateException(msg))
+            throw IllegalStateException(msg, e)
         }
-        pending.remove(id)
-        deferred.completeExceptionally(IllegalStateException("RPC command timed out: ${command["type"]?.jsonPrimitive?.contentOrNull ?: "unknown"}"))
-        return deferred.await()
     }
 
     fun stderrTail(): String = recentStderr
@@ -148,7 +160,8 @@ class PiRpcRuntime(
         appendLine("export PI_SKIP_VERSION_CHECK=1")
         appendLine("export PI_TELEMETRY=0")
         appendLine("export TERM=dumb")
-        appendLine(configManager.runtimeEnvExports())
+        val envExports = configManager.runtimeEnvExports()
+        if (envExports.isNotBlank()) appendLine(envExports)
         appendLine("export NODE_OPTIONS=\"\${NODE_OPTIONS:-} --require /root/pi_workspace/.idadroid/pi-agent/rpc-stdio-guard.cjs\"")
         append("exec pi --mode rpc ")
         val sessionFile = session.sessionFile?.trim().orEmpty()

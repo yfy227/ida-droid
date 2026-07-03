@@ -9,6 +9,7 @@ import dev.idadroid.env.EnvironmentPaths
 import dev.idadroid.proot.IdaProotRuntime
 import dev.idadroid.settings.IdaDroidSettings
 import dev.idadroid.settings.VncSettings
+import dev.idadroid.util.safePid
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -41,13 +42,13 @@ class VncSessionManager(
 
     suspend fun startGui(openViewer: Boolean = true): Result<GuiSessionState> {
         if (!startStopMutex.tryLock()) {
-            val busy = _state.value.copy(
-                status = GuiStatus.Starting,
-                message = "IDA GUI/VNC 正在启动，请稍候…",
-                startedAt = _state.value.startedAt ?: System.currentTimeMillis()
-            )
+            // Another start/stop is in progress; reflect that in state and return as busy.
+            val busy = _state.value.let {
+                if (it.status == GuiStatus.Starting || it.status == GuiStatus.Running) it
+                else it.copy(status = GuiStatus.Starting, message = "IDA GUI/VNC 正在启动，请稍候…", startedAt = it.startedAt ?: System.currentTimeMillis())
+            }
             _state.value = busy
-            return Result.success(busy)
+            return Result.failure(IllegalStateException("IDA GUI/VNC 正在启动或停止，请稍候…"))
         }
         try {
             val settings = settingsStore.vncSettings.value
@@ -215,20 +216,26 @@ class VncSessionManager(
         startedAt = _state.value.startedAt ?: System.currentTimeMillis()
     )
 
-    private fun buildStartCommand(settings: VncSettings): String = listOf(
-        "IDADROID_DISPLAY=${IdaProotRuntime.shellQuote(settings.display.toString())}",
-        "IDADROID_VNC_PORT=${IdaProotRuntime.shellQuote(settings.port.toString())}",
-        "IDADROID_VNC_PASSWORD=${IdaProotRuntime.shellQuote(settings.password)}",
-        "IDADROID_GEOMETRY=${IdaProotRuntime.shellQuote(settings.geometry)}",
-        "IDADROID_DEPTH=${IdaProotRuntime.shellQuote(settings.depth.toString())}",
-        "/root/pi_workspace/.idadroid/scripts/start-ida-vnc.sh"
-    ).joinToString(" ")
+    private fun buildStartCommand(settings: VncSettings): String {
+        val workspacePath = settingsStore.envSettings.value.workspacePath.trimEnd('/')
+        return listOf(
+            "IDADROID_DISPLAY=${IdaProotRuntime.shellQuote(settings.display.toString())}",
+            "IDADROID_VNC_PORT=${IdaProotRuntime.shellQuote(settings.port.toString())}",
+            "IDADROID_VNC_PASSWORD=${IdaProotRuntime.shellQuote(settings.password)}",
+            "IDADROID_GEOMETRY=${IdaProotRuntime.shellQuote(settings.geometry)}",
+            "IDADROID_DEPTH=${IdaProotRuntime.shellQuote(settings.depth.toString())}",
+            "${workspacePath}/.idadroid/scripts/start-ida-vnc.sh"
+        ).joinToString(" ")
+    }
 
-    private fun buildStopCommand(settings: VncSettings): String = listOf(
-        "IDADROID_DISPLAY=${IdaProotRuntime.shellQuote(settings.display.toString())}",
-        "IDADROID_VNC_PORT=${IdaProotRuntime.shellQuote(settings.port.toString())}",
-        "/root/pi_workspace/.idadroid/scripts/stop-ida-vnc.sh"
-    ).joinToString(" ")
+    private fun buildStopCommand(settings: VncSettings): String {
+        val workspacePath = settingsStore.envSettings.value.workspacePath.trimEnd('/')
+        return listOf(
+            "IDADROID_DISPLAY=${IdaProotRuntime.shellQuote(settings.display.toString())}",
+            "IDADROID_VNC_PORT=${IdaProotRuntime.shellQuote(settings.port.toString())}",
+            "${workspacePath}/.idadroid/scripts/stop-ida-vnc.sh"
+        ).joinToString(" ")
+    }
 
     private fun buildVncUri(settings: VncSettings): Uri {
         val builder = Uri.Builder()
@@ -242,8 +249,9 @@ class VncSessionManager(
     }
 
     private fun materializeScripts(settings: VncSettings) {
-        val scriptsDir = File(paths.rootfsDir, "root/pi_workspace/.idadroid/scripts").apply { mkdirs() }
-        File(paths.rootfsDir, "root/pi_workspace/.idadroid/logs").mkdirs()
+        val workspacePath = settingsStore.envSettings.value.workspacePath.trimStart('/').trimEnd('/')
+        val scriptsDir = File(paths.rootfsDir, "$workspacePath/.idadroid/scripts").apply { mkdirs() }
+        File(paths.rootfsDir, "$workspacePath/.idadroid/logs").mkdirs()
         val start = File(scriptsDir, "start-ida-vnc.sh")
         val stop = File(scriptsDir, "stop-ida-vnc.sh")
         start.writeText(startScript(settings))
@@ -252,7 +260,10 @@ class VncSessionManager(
         runCatching { Os.chmod(stop.absolutePath, 493) }
     }
 
-    private fun startScript(settings: VncSettings): String = """
+    private fun startScript(settings: VncSettings): String {
+        val idaHome = settingsStore.envSettings.value.idaHome.trimEnd('/')
+        val workspacePath = settingsStore.envSettings.value.workspacePath.trimEnd('/')
+        return """
         #!/usr/bin/env bash
         set -euo pipefail
 
@@ -275,10 +286,10 @@ class VncSessionManager(
         export LIBGL_ALWAYS_SOFTWARE=1
         export NO_AT_BRIDGE=1
 
-        mkdir -p "${'$'}XDG_RUNTIME_DIR" /tmp/.X11-unix /root/pi_workspace/.idadroid/logs
+        mkdir -p "${'$'}XDG_RUNTIME_DIR" /tmp/.X11-unix ${workspacePath}/.idadroid/logs
         chmod 700 "${'$'}XDG_RUNTIME_DIR" >/dev/null 2>&1 || true
 
-        log=/root/pi_workspace/.idadroid/logs/ida-vnc.log
+        log=${workspacePath}/.idadroid/logs/ida-vnc.log
         : > "${'$'}log"
         echo "[$(date -Is 2>/dev/null || date)] IDAdroid VNC start" >>"${'$'}log"
         echo "display=${'$'}DISPLAY port=${'$'}VNC_PORT geometry=${'$'}GEOMETRY depth=${'$'}DEPTH" >>"${'$'}log"
@@ -320,7 +331,7 @@ class VncSessionManager(
         }
 
         start_ida() {
-          cd /root/ida-pro-9.3 2>/dev/null || { echo "No /root/ida-pro-9.3" >>"${'$'}log"; return 1; }
+          cd ${idaHome} 2>/dev/null || { echo "No ${idaHome}" >>"${'$'}log"; return 1; }
           for bin in ./ida ./ida64 ./idat ./idat64; do
             if [ -x "${'$'}bin" ]; then
               "${'$'}bin" >>"${'$'}log" 2>&1 &
@@ -381,15 +392,19 @@ class VncSessionManager(
           sleep 2
         done
     """.trimIndent() + "\n"
+    }
 
-    private fun stopScript(): String = """
+    private fun stopScript(): String {
+        val idaHome = settingsStore.envSettings.value.idaHome.trimEnd('/')
+        val workspacePath = settingsStore.envSettings.value.workspacePath.trimEnd('/')
+        return """
         #!/usr/bin/env bash
         set +e
         export DISPLAY=":${'$'}{IDADROID_DISPLAY:-1}"
         display_num="${'$'}{DISPLAY#:}"
         VNC_PORT="${'$'}{IDADROID_VNC_PORT:-5901}"
-        log=/root/pi_workspace/.idadroid/logs/ida-vnc.log
-        mkdir -p /root/pi_workspace/.idadroid/logs
+        log=${workspacePath}/.idadroid/logs/ida-vnc.log
+        mkdir -p ${workspacePath}/.idadroid/logs
         echo "[$(date -Is 2>/dev/null || date)] IDAdroid VNC stop display=${'$'}DISPLAY port=${'$'}VNC_PORT" >>"${'$'}log"
 
         if command -v vncserver >/dev/null 2>&1; then vncserver -kill "${'$'}DISPLAY" >>"${'$'}log" 2>&1 || true; fi
@@ -399,10 +414,11 @@ class VncSessionManager(
         done
         pkill -f "x11vnc.*-rfbport ${'$'}VNC_PORT" 2>/dev/null || true
         pkill -f "Xtigervnc.*:${'$'}display_num" 2>/dev/null || true
-        pkill -f "/root/ida-pro-9.3/ida" 2>/dev/null || true
+        pkill -f "${idaHome}/ida" 2>/dev/null || true
         rm -f "/tmp/.X${'$'}{display_num}-lock" "/tmp/.X11-unix/X${'$'}display_num" 2>/dev/null || true
         echo "Stopped" >>"${'$'}log"
     """.trimIndent() + "\n"
+    }
 
     private fun isTcpOpen(port: Int): Boolean = runCatching {
         Socket().use { socket ->
@@ -437,14 +453,11 @@ class VncSessionManager(
 
     private fun supervisorLogFile(): File = File(paths.logsDir, "ida-vnc-supervisor.log")
 
-    private fun Process?.safePid(): Int? = null
+    @Volatile private var activeProcess: Process? = null
 
     companion object {
         private const val AVNC_PACKAGE = "com.gaurav.avnc"
         private val startStopMutex = Mutex()
-
-        @Volatile
-        private var activeProcess: Process? = null
     }
 }
 

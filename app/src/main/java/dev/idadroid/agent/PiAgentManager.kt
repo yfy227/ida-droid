@@ -7,17 +7,19 @@ import dev.idadroid.env.PiWorkspaceMaterializer
 import dev.idadroid.proot.ProotBinaryInstaller
 import java.io.File
 import java.time.Instant
-import kotlinx.serialization.decodeFromString
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -32,12 +34,30 @@ class PiAgentManager(
     private val appContext = context.applicationContext
     private val repo = AgentSessionRepository(paths)
     private val configManager = PiConfigManager(paths)
+    val aiConfigTools = AiConfigTools(paths, configManager)
     private val attachmentManager = AttachmentManager(appContext, paths)
+    val workspaceManager = WorkspaceManager(appContext, paths)
+    private val deepIndexToolChain = dev.idadroid.deepindex.DeepIndexToolChain(appContext, paths)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false; isLenient = true }
     private val runtimes = mutableMapOf<String, PiRpcRuntime>()
     private val rawLines = ArrayDeque<String>()
+    // Send lock: prevents concurrent sendPrompt calls from racing. Operit uses
+    // a similar coordination pattern in MessageCoordinationDelegate.
+    private val sendMutex = kotlinx.coroutines.sync.Mutex()
+    @Volatile private var sendingInProgress = false
 
+    // ==================== 流式 delta 合并器 ====================
+    // 高频 text_delta / thinking_delta 事件会以每秒数十~数百次的频率到达，
+    // 若每次都立即 _state.update + 整条消息列表拷贝 + 触发 Compose 重组，
+    // 会导致主线程被疯狂打帧、Markdown 反复全量重解析（O(n^2)），表现为
+    // 回复"粘成一坨"地攒着一起蹦出来。这里把 delta 先累积到缓冲区，再按
+    // 固定节拍（约 30fps）合并 flush，既保证逐字流式的视觉流畅，又把状态
+    // 更新与重组次数压到可控范围。
+    private val pendingTextDelta = StringBuilder()
+    private val pendingThinkingDelta = StringBuilder()
+    private var deltaFlushJob: Job? = null
+    private var deltaStreaming = false
     private val _state = MutableStateFlow(AgentUiState(activity = "agent 未启动"))
     val state: StateFlow<AgentUiState> = _state.asStateFlow()
 
@@ -62,7 +82,7 @@ class PiAgentManager(
             ).id
             else -> null
         }
-        val sessions = repo.loadStore().sessions
+        val sessions = store.sessions
         _state.update { old ->
             val activeSession = sessions.firstOrNull { it.id == active }
             old.copy(
@@ -72,7 +92,12 @@ class PiAgentManager(
                 error = activeSession?.error,
                 modelLabel = modelLabel(activeSession),
                 piConfig = configManager.readSnapshot(),
-                activity = if (active == null) "点击新建 Session 开始" else old.activity
+                activity = if (active == null) "点击新建 Session 开始" else old.activity,
+                workspace = old.workspace.copy(
+                    hasWorkspace = workspaceManager.hasWorkspace,
+                    workspaceName = workspaceManager.currentWorkspaceName,
+                    workspaceUri = workspaceManager.currentWorkspaceUri?.toString().orEmpty()
+                )
             )
         }
         active?.let { loadMessages(it) }
@@ -146,15 +171,35 @@ class PiAgentManager(
     }
 
     fun sendPrompt(text: String, attachments: List<DraftAttachment> = emptyList(), sendMode: String? = null) {
+        // Guard: drop the call if a send is already in flight. This prevents
+        // double-tap races where the user hits the send button twice quickly
+        // and two prompts get queued into the RPC runtime simultaneously.
+        if (sendingInProgress) {
+            _state.update { it.copy(activity = "上一条消息仍在发送中，请稍候…") }
+            return
+        }
         scope.launch {
-            val sessionId = _state.value.activeSessionId ?: run {
-                val created = createDefaultSessionWithConfiguredModel()
-                refresh()
-                created.id
+            sendingInProgress = true
+            try {
+                sendPromptInternal(text, attachments, sendMode)
+            } finally {
+                sendingInProgress = false
             }
-            val trimmed = text.trimEnd()
-            if (trimmed.isBlank() && attachments.isEmpty()) return@launch
-            val wasWorking = _state.value.isWorking
+        }
+    }
+
+    private suspend fun sendPromptInternal(text: String, attachments: List<DraftAttachment>, sendMode: String?) {
+        val sessionId = _state.value.activeSessionId ?: run {
+            val created = createDefaultSessionWithConfiguredModel()
+            refresh()
+            created.id
+        }
+        val trimmed = text.trimEnd()
+        if (trimmed.isBlank() && attachments.isEmpty()) return
+        // Acquire the send mutex so only one prompt flows through the RPC
+        // runtime at a time. If the user sends again while we're still
+        // attaching files or waiting for the runtime, the second call waits.
+        sendMutex.withLock {
             try {
                 val session = repo.setActive(sessionId)
                 val stored = attachmentManager.storeAttachments(attachments)
@@ -170,14 +215,29 @@ class PiAgentManager(
 
                 appendMessage(ChatMessage(newMessageId(), "user", displayMessage, System.currentTimeMillis(), attachments = displayAttachments))
                 setTurnActive(sessionId, true)
+                _state.update { it.copy(activity = "正在发送消息…") }
                 val expanded = attachmentManager.expandFileReferencesForPrompt(displayMessage, session.cwd)
                 val runtime = startSessionInternal(sessionId)
                 when (sendMode) {
                     "steer" -> runtime.steer(expanded.message)
                     "followUp" -> runtime.followUp(expanded.message)
                     else -> {
+                        val wasWorking = _state.value.isWorking
                         if (wasWorking) runCatching { runtime.abort() }
-                        runtime.prompt(expanded.message, expanded.images)
+                        // Wrap the prompt call with a timeout so a hung RPC
+                        // doesn't leave the UI stuck in "working" forever.
+                        runCatching {
+                            kotlinx.coroutines.withTimeout(PROMPT_TIMEOUT_MS) {
+                                runtime.prompt(expanded.message, expanded.images)
+                            }
+                        }.onFailure { e ->
+                            if (e is kotlinx.coroutines.TimeoutCancellationException) {
+                                appendMessage(ChatMessage(newMessageId(), "system", "发送超时，请检查 Agent 是否响应", System.currentTimeMillis()))
+                                runCatching { runtime.abort() }
+                            } else {
+                                throw e
+                            }
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -213,6 +273,141 @@ class PiAgentManager(
     fun clearRawLog() {
         rawLines.clear()
         _state.update { it.copy(rawLogLines = emptyList(), stderrTail = "") }
+    }
+
+    // ==================== 工作区相关 ====================
+
+    /** 设置工作区 URI（由 SAF 选择回调传入）。 */
+    fun setWorkspace(uri: android.net.Uri) {
+        scope.launch {
+            runCatching {
+                workspaceManager.setWorkspace(uri)
+                _state.update { it.copy(workspace = it.workspace.copy(
+                    hasWorkspace = true,
+                    workspaceName = workspaceManager.currentWorkspaceName,
+                    workspaceUri = uri.toString(),
+                    currentPath = "",
+                    error = null
+                )) }
+                refreshWorkspaceFiles()
+            }.onFailure { error -> setError("设置工作区失败：${error.message}") }
+        }
+    }
+
+    /** 清除当前工作区。 */
+    fun clearWorkspace() {
+        workspaceManager.clearWorkspace()
+        _state.update { it.copy(workspace = WorkspaceState()) }
+    }
+
+    /** 刷新工作区文件列表。 */
+    fun refreshWorkspaceFiles(path: String = _state.value.workspace.currentPath) {
+        scope.launch {
+            _state.update { it.copy(workspace = it.workspace.copy(loading = true, error = null)) }
+            try {
+                val files = withContext(Dispatchers.IO) { workspaceManager.listFiles(path) }
+                _state.update { it.copy(workspace = it.workspace.copy(
+                    files = files,
+                    currentPath = path,
+                    loading = false
+                )) }
+            } catch (error: Exception) {
+                _state.update { it.copy(workspace = it.workspace.copy(
+                    loading = false,
+                    error = "读取工作区失败：${error.message}"
+                )) }
+            }
+        }
+    }
+
+    /** 进入工作区子目录。 */
+    fun navigateWorkspace(relativePath: String) {
+        val next = workspaceManager.resolvePath(_state.value.workspace.currentPath, relativePath)
+        refreshWorkspaceFiles(next)
+    }
+
+    /** 将工作区中的文件导入到 pi_workspace 容器内，供 Agent 使用。 */
+    fun importWorkspaceFileToContainer(entry: WorkspaceFileEntry, onResult: (Boolean, String) -> Unit = { _, _ -> }) {
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { workspaceManager.importToContainer(entry) }
+            }.onSuccess { prootPath ->
+                val path = prootPath ?: "未知路径"
+                appendMessage(ChatMessage(newMessageId(), "system", "已从工作区导入文件：${entry.name} → $path", System.currentTimeMillis()))
+                onResult(true, path)
+            }.onFailure { error ->
+                setError("导入工作区文件失败：${error.message}")
+                onResult(false, error.message ?: "未知错误")
+            }
+        }
+    }
+
+    /** 将 pi_workspace 容器内的文件导出到工作区。 */
+    fun exportFileToWorkspace(containerRelativePath: String, onResult: (Boolean, String) -> Unit = { _, _ -> }) {
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { workspaceManager.exportFromContainer(containerRelativePath) }
+            }.onSuccess { name ->
+                val fileName = name ?: containerRelativePath.substringAfterLast('/').ifBlank { containerRelativePath }
+                appendMessage(ChatMessage(newMessageId(), "system", "已导出到工作区：$containerRelativePath → $fileName", System.currentTimeMillis()))
+                refreshWorkspaceFiles()
+                onResult(true, fileName)
+            }.onFailure { error ->
+                setError("导出到工作区失败：${error.message}")
+                onResult(false, error.message ?: "未知错误")
+            }
+        }
+    }
+
+    /** 读取工作区文件作为草稿附件（用于发送给 Agent）。 */
+    suspend fun readWorkspaceFileAsAttachment(entry: WorkspaceFileEntry): DraftAttachment? {
+        return runCatching {
+            withContext(Dispatchers.IO) { workspaceManager.readAsDraftAttachment(entry) }
+        }.onFailure { error ->
+            setError("读取工作区文件失败：${error.message}")
+        }.getOrNull()
+    }
+
+    /** 将指定助手回复保存为工作区文件（满足"生成的代码文件都放工作区"）。 */
+    fun saveAssistantMessageToWorkspace(messageId: String, fileName: String, onResult: (Boolean, String) -> Unit = { _, _ -> }) {
+        val message = _state.value.messages.firstOrNull { it.id == messageId && it.role == "assistant" }
+        if (message == null) {
+            onResult(false, "未找到该回复")
+            return
+        }
+        val content = message.text.ifBlank { message.thinking ?: "" }
+        if (content.isBlank()) {
+            onResult(false, "回复内容为空")
+            return
+        }
+        val safeName = safeFileName(fileName).ifBlank { "reply.txt" }
+        val finalName = if (safeName.contains('.')) safeName else "$safeName.txt"
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { workspaceManager.writeFileText(finalName, content) }
+            }.onSuccess { ok ->
+                if (ok) {
+                    appendMessage(ChatMessage(newMessageId(), "system", "已保存到工作区：$finalName", System.currentTimeMillis()))
+                    refreshWorkspaceFiles()
+                    onResult(true, finalName)
+                } else {
+                    setError("保存到工作区失败：工作区未就绪")
+                    onResult(false, "工作区未就绪")
+                }
+            }.onFailure { error ->
+                setError("保存到工作区失败：${error.message}")
+                onResult(false, error.message ?: "未知错误")
+            }
+        }
+    }
+
+    /** 将工作区文件内容作为文本引用插入到输入框。 */
+    suspend fun readWorkspaceFileAsText(entry: WorkspaceFileEntry): String? {
+        return runCatching {
+            withContext(Dispatchers.IO) { workspaceManager.readAsText(entry) }
+        }.onFailure { error ->
+            setError("读取工作区文件失败：${error.message}")
+        }.getOrNull()
     }
 
     suspend fun readDraftAttachment(uri: android.net.Uri): DraftAttachment = attachmentManager.readDraft(uri)
@@ -301,6 +496,20 @@ class PiAgentManager(
                 .onFailure { error -> setError("保存 Pi 配置失败：${error.message}") }
         }
     }
+
+    // ==================== Deep Index Mode ====================
+
+    fun enableDeepIndexMode() {
+        deepIndexToolChain.setEnabled(true)
+        _state.update { it.copy(activity = "深度索引模式已开启：deep-index 工具链已就绪，agent 将使用 CodeGraph + ECC + Memory 联动分析") }
+    }
+
+    fun disableDeepIndexMode() {
+        deepIndexToolChain.setEnabled(false)
+        _state.update { it.copy(activity = "深度索引模式已关闭") }
+    }
+
+    fun isDeepIndexEnabled(): Boolean = deepIndexToolChain.isEnabled()
 
     suspend fun listFiles(path: String): List<FileEntry> = withContext(Dispatchers.IO) {
         val dir = workspaceFile(path)
@@ -405,7 +614,18 @@ class PiAgentManager(
         val runtime = PiRpcRuntime(appContext, session, events, paths)
         runtimes[sessionId] = runtime
         scope.launch(Dispatchers.Main.immediate) {
-            events.collect { event -> handleRuntimeEvent(sessionId, event) }
+            events.collect { event ->
+                try {
+                    handleRuntimeEvent(sessionId, event)
+                } catch (e: Exception) {
+                    // A single failing event must NOT kill the collector —
+                    // otherwise all subsequent streaming events (text deltas,
+                    // turn_end, RPC responses) are silently dropped and the
+                    // user sees "sent but no reply" indefinitely.
+                    android.util.Log.e("PiAgentManager", "handleRuntimeEvent failed for $sessionId", e)
+                    _state.update { it.copy(activity = "事件处理异常：${e.message}") }
+                }
+            }
         }
         runtime.start()
         runtime
@@ -417,6 +637,14 @@ class PiAgentManager(
     }
 
     private suspend fun refreshRuntimeState(sessionId: String) {
+        try {
+            refreshRuntimeStateInternal(sessionId)
+        } catch (e: Exception) {
+            android.util.Log.e("PiAgentManager", "refreshRuntimeState failed for $sessionId", e)
+        }
+    }
+
+    private suspend fun refreshRuntimeStateInternal(sessionId: String) {
         val runtime = runtimes[sessionId]?.takeIf { it.isActive() } ?: run {
             refresh()
             return
@@ -580,6 +808,11 @@ class PiAgentManager(
     }
 
     private fun setTurnActive(sessionId: String, active: Boolean) {
+        if (!active) {
+            // 本轮对话结束：把流式缓冲区里残余的 delta 强制 flush 干净，
+            // 确保最后一段文字不会因为节拍 flusher 还没到点而丢失。
+            finishStreamingFlush()
+        }
         repo.updateRuntimeStatus(sessionId, if (active) "working" else "running", null)
         _state.update { it.copy(turnActive = active, status = if (active) "working" else "running", sessions = repo.listSessions()) }
     }
@@ -603,6 +836,31 @@ class PiAgentManager(
 
     private fun applyAssistantDeltas(textDelta: String, thinkingDelta: String) {
         if (textDelta.isEmpty() && thinkingDelta.isEmpty()) return
+        // 累积到缓冲区，避免每个 delta 都触发一次整列表拷贝 + 全屏重组。
+        if (textDelta.isNotEmpty()) pendingTextDelta.append(textDelta)
+        if (thinkingDelta.isNotEmpty()) pendingThinkingDelta.append(thinkingDelta)
+        // 本轮第一个 delta：立即 flush 一次，让流式游标与首字瞬间出现，
+        // 随后启动节拍 flusher（约 30fps）持续合并后续 delta。
+        if (!deltaStreaming) {
+            deltaStreaming = true
+            flushPendingDeltas()
+            deltaFlushJob?.cancel()
+            deltaFlushJob = scope.launch(Dispatchers.Main.immediate) {
+                while (isActive) {
+                    delay(STREAM_FLUSH_INTERVAL_MS)
+                    flushPendingDeltas()
+                }
+            }
+        }
+    }
+
+    /** 把缓冲区里累积的 delta 一次性合并进状态（一次 _state.update）。 */
+    private fun flushPendingDeltas() {
+        if (pendingTextDelta.isEmpty() && pendingThinkingDelta.isEmpty()) return
+        val textDelta = pendingTextDelta.toString()
+        val thinkingDelta = pendingThinkingDelta.toString()
+        pendingTextDelta.setLength(0)
+        pendingThinkingDelta.setLength(0)
         _state.update { old ->
             val list = old.messages.toMutableList()
             val last = list.lastOrNull()
@@ -616,6 +874,14 @@ class PiAgentManager(
             }
             old.copy(messages = list)
         }
+    }
+
+    /** 结束本轮流式：停止节拍 flusher，并把残余 delta 强制 flush 干净，确保不丢字。 */
+    private fun finishStreamingFlush() {
+        deltaFlushJob?.cancel()
+        deltaFlushJob = null
+        flushPendingDeltas()
+        deltaStreaming = false
     }
 
     private fun upsertTool(toolCallId: String, name: String, args: JsonElement?, result: String?, resultMeta: ToolResultMeta?, status: String) {
@@ -736,4 +1002,11 @@ class PiAgentManager(
         session?.model?.takeIf { it.isNotBlank() },
         session?.thinkingLevel?.takeIf { it.isNotBlank() }?.let { "thinking=$it" }
     ).joinToString(" / ")
+
+    private companion object {
+        /** 流式 delta 合并 flush 节拍，约 30fps：兼顾逐字流式的视觉流畅与状态更新开销。 */
+        const val STREAM_FLUSH_INTERVAL_MS = 33L
+        /** 单次 prompt 调用的超时时间。超过后中止并提示用户，避免 UI 永久卡在 working 状态。 */
+        const val PROMPT_TIMEOUT_MS = 600_000L // 10 分钟
+    }
 }

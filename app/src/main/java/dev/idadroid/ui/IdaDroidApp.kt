@@ -1,5 +1,6 @@
 package dev.idadroid.ui
 
+import android.os.Build
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import androidx.activity.compose.BackHandler
@@ -87,6 +88,10 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
@@ -153,15 +158,31 @@ private enum class IdaDroidScreen { Home, Settings, Agent, About }
 
 @Composable
 fun IdaDroidApp() {
-    MaterialTheme {
+    val context = LocalContext.current
+    val settingsStore = remember { IdaDroidSettings(context.applicationContext) }
+    val appearance by settingsStore.appearanceSettings.collectAsState()
+
+    val isDark = when (appearance.themeMode) {
+        IdaDroidSettings.THEME_DARK -> true
+        IdaDroidSettings.THEME_LIGHT -> false
+        else -> androidx.compose.foundation.isSystemInDarkTheme()
+    }
+
+    val colorScheme = when {
+        appearance.dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+            if (isDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+        }
+        isDark -> darkColorScheme()
+        else -> lightColorScheme()
+    }
+
+    MaterialTheme(colorScheme = colorScheme) {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            val context = LocalContext.current
             val manager = remember { EnvironmentManager(context.applicationContext) }
-            val settingsStore = remember { IdaDroidSettings(context.applicationContext) }
             val vncManager = remember { VncSessionManager(context.applicationContext, settingsStore) }
             val agentManager = remember { PiAgentManager(context.applicationContext) }
             val fileManager = remember { ContainerFileManager(context.applicationContext) }
-            val mcpManager = remember { IdaMcpSessionManager(context.applicationContext) }
+            val mcpManager = remember { IdaMcpSessionManager(context.applicationContext, settingsStore = settingsStore) }
             val envState by manager.state.collectAsState()
             val guiState by vncManager.state.collectAsState()
             val agentState by agentManager.state.collectAsState()
@@ -228,7 +249,8 @@ fun IdaDroidApp() {
                     settingsStore = settingsStore,
                     onBackClick = { currentScreen = IdaDroidScreen.Home },
                     onShowTerminalLog = { showTerminalDiagnostics = true },
-                    onShowVncLog = { showVncLog = true }
+                    onShowVncLog = { showVncLog = true },
+                    onShowMcpLog = { showMcpLog = true }
                 )
             } else if (currentScreen == IdaDroidScreen.Agent) {
                 BoxedAgentLikeScreen(
@@ -330,6 +352,15 @@ fun IdaDroidApp() {
                         }
                     },
                     onShowMcpLog = { showMcpLog = true },
+                    onToggleMcpMonitoring = { enabled ->
+                        mcpManager.setMonitoringEnabled(enabled)
+                    },
+                    onMcpHealthCheck = {
+                        scope.launch {
+                            val ok = mcpManager.healthCheck()
+                            transientMessage = if (ok) "健康检查通过" else "健康检查失败"
+                        }
+                    },
                     onRevalidate = {
                         scope.launch {
                             validationBusy = true

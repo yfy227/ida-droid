@@ -97,6 +97,21 @@ data class PiUserConfig(
     val extraArgs: List<String> = emptyList()
 )
 
+@Serializable
+data class ConfigExport(
+    val defaultProvider: String = "",
+    val defaultModel: String = "",
+    val defaultThinkingLevel: String = "medium",
+    val enabledModels: String = "",
+    val settingsText: String = "{}",
+    val modelsText: String = "{}",
+    val envText: String = "{}",
+    val appendSystem: String = "",
+    val extraArgsText: String = "",
+    val version: Int = 1,
+    val exportedAt: Long = 0L
+)
+
 data class PiConfigSnapshot(
     val defaultProvider: String = "",
     val defaultModel: String = "",
@@ -105,9 +120,7 @@ data class PiConfigSnapshot(
     val settingsText: String = "{}",
     val modelsText: String = "{}",
     val envText: String = "{}",
-    val systemPrompt: String = "",
     val appendSystem: String = "",
-    val agentsMd: String = "",
     val extraArgsText: String = "",
     val materializedDir: String = "/root/pi_workspace/.idadroid/pi-agent",
     val modelCatalog: AgentModelCatalog = AgentModelCatalog()
@@ -134,7 +147,8 @@ data class AgentUiState(
     val modelLoading: Boolean = false,
     val activeStats: SessionStats? = null,
     val activeQueue: QueueState = QueueState(),
-    val piConfig: PiConfigSnapshot = PiConfigSnapshot()
+    val piConfig: PiConfigSnapshot = PiConfigSnapshot(),
+    val workspace: WorkspaceState = WorkspaceState()
 ) {
     val activeSession: AgentSessionRecord? get() = sessions.firstOrNull { it.id == activeSessionId }
     val activeSessionHasConfiguredModel: Boolean get() = activeSession?.let { !it.provider.isNullOrBlank() && !it.model.isNullOrBlank() } == true
@@ -142,6 +156,8 @@ data class AgentUiState(
     val canUseActiveSession: Boolean get() = agentConfigReady && activeSessionHasConfiguredModel
     val isWorking: Boolean get() = turnActive || status == "working"
     val canSend: Boolean get() = activeSessionId != null && canUseActiveSession && !isWorking && status != "starting"
+    /** 当前正在流式输出的助手消息 ID（用于 UI 渲染闪烁游标）。 */
+    val streamingMessageId: String? get() = if (isWorking) messages.lastOrNull { it.role == "assistant" }?.id else null
 }
 
 sealed interface ChatAttachment {

@@ -5,6 +5,11 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -45,6 +50,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AccountTree
 import androidx.compose.material.icons.rounded.Api
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.ArrowDownward
@@ -67,9 +73,11 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.FlashOn
+import androidx.compose.material.icons.rounded.FileDownload
+import androidx.compose.material.icons.rounded.FileUpload
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FolderOpen
-import androidx.compose.material.icons.rounded.FormatListBulleted
+import androidx.compose.material.icons.automirrored.rounded.FormatListBulleted
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
@@ -78,26 +86,31 @@ import androidx.compose.material.icons.rounded.KeyboardDoubleArrowUp
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MoreVert
-import androidx.compose.material.icons.rounded.NoteAdd
+import androidx.compose.material.icons.automirrored.rounded.NoteAdd
 import androidx.compose.material.icons.rounded.OpenInFull
 import androidx.compose.material.icons.rounded.Paid
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.Queue
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Save
+import androidx.compose.material.icons.rounded.SaveAlt
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.Send
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Terminal
+import androidx.compose.material.icons.automirrored.rounded.TextSnippet
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Upload
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -123,7 +136,7 @@ import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -133,6 +146,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -158,6 +172,8 @@ import androidx.compose.ui.unit.sp
 import dev.idadroid.agent.AgentModelCatalog
 import dev.idadroid.agent.AgentSessionRecord
 import dev.idadroid.agent.AgentUiState
+import dev.idadroid.agent.WorkspaceFileEntry
+import dev.idadroid.agent.WorkspaceState
 import dev.idadroid.agent.ChatAttachment
 import dev.idadroid.agent.ChatMessage
 import dev.idadroid.agent.DraftAttachment
@@ -174,6 +190,7 @@ import dev.idadroid.files.RootfsFileSharing
 import dev.idadroid.vnc.GuiSessionState
 import dev.idadroid.vnc.GuiStatus
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -186,7 +203,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlin.math.max
 
 private enum class AgentToolTab { Terminal, Files, Pi, Ida }
-private enum class AgentOverlay { Sessions, Tools, ModelsEditor }
+private enum class AgentOverlay { Sessions, Tools, ModelsEditor, Workspace }
 private val ThinkingLevels = listOf("off", "minimal", "low", "medium", "high", "xhigh")
 private val UiJson = Json { prettyPrint = true; ignoreUnknownKeys = true; explicitNulls = false }
 private val MarkdownParagraphBreakRegex = Regex("\\n{2,}")
@@ -214,6 +231,7 @@ fun BoxedAgentLikeScreen(
     val showSessions = overlay == AgentOverlay.Sessions
     val showTools = overlay == AgentOverlay.Tools
     val showModelsEditor = overlay == AgentOverlay.ModelsEditor
+    val showWorkspace = overlay == AgentOverlay.Workspace
     var showThinkingMenu by remember { mutableStateOf(false) }
     var showModelMenu by remember { mutableStateOf(false) }
     var showCompactMenu by remember { mutableStateOf(false) }
@@ -222,7 +240,10 @@ fun BoxedAgentLikeScreen(
     var forceShowConfigDialog by remember { mutableStateOf(false) }
     var dismissedConfigPromptKey by remember { mutableStateOf<String?>(null) }
     var dialogMessage by remember { mutableStateOf<String?>(null) }
+    var saveToWorkspaceMessageId by remember { mutableStateOf<String?>(null) }
+    var saveToWorkspaceFileName by remember { mutableStateOf("") }
     var quickActionsVisible by remember { mutableStateOf(false) }
+    var deepIndexEnabled by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
@@ -309,7 +330,13 @@ fun BoxedAgentLikeScreen(
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         if (session == null) {
-            EmptyAgentTopBar(onSessions = { overlay = AgentOverlay.Sessions }, onTools = { overlay = AgentOverlay.Tools })
+            EmptyAgentTopBar(
+                onSessions = { overlay = AgentOverlay.Sessions },
+                onTools = { overlay = AgentOverlay.Tools },
+                onWorkspace = { overlay = AgentOverlay.Workspace },
+                hasWorkspace = agentState.workspace.hasWorkspace,
+                workspaceName = agentState.workspace.workspaceName
+            )
             CenterWelcomeBox("选择或创建 Session", "点击左上角打开 Sessions。", null)
         } else {
             ChatTopBar(
@@ -318,8 +345,11 @@ fun BoxedAgentLikeScreen(
                 autoCompact = session.autoCompactionEnabled != false,
                 isWorking = agentState.isWorking,
                 status = agentState.status,
+                workspaceName = agentState.workspace.workspaceName,
+                hasWorkspace = agentState.workspace.hasWorkspace,
                 onSessions = { overlay = AgentOverlay.Sessions },
                 onTools = { overlay = AgentOverlay.Tools },
+                onWorkspace = { overlay = AgentOverlay.Workspace },
                 onRefresh = { manager.refresh(createDefaultIfReady = true); manager.loadMessages() }
             )
             Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -338,7 +368,11 @@ fun BoxedAgentLikeScreen(
                             autoOpenProgress = msg.id == autoOpenProgressId,
                             isLatestMessage = msg.id == lastMessage?.id,
                             streaming = agentState.isWorking && msg.role == "assistant" && msg.id == agentState.messages.lastOrNull { it.role == "assistant" }?.id,
-                            onShowDialog = { dialogMessage = msg.text.ifBlank { msg.toolResult.orEmpty() } }
+                            onShowDialog = { dialogMessage = msg.text.ifBlank { msg.toolResult.orEmpty() } },
+                            onSaveToWorkspace = {
+                                saveToWorkspaceMessageId = msg.id
+                                saveToWorkspaceFileName = "reply-${msg.timestamp}".replace(Regex("[^0-9]"), "").take(14).ifBlank { "reply" }
+                            }
                         )
                     }
                     if (agentState.isWorking) item { ProcessingCard() }
@@ -394,7 +428,16 @@ fun BoxedAgentLikeScreen(
                             attachments = emptyList()
                         }
                     },
-                    onAbort = { manager.abort() }
+                    onAbort = { manager.abort() },
+                    deepIndexEnabled = deepIndexEnabled,
+                    onToggleDeepIndex = {
+                        deepIndexEnabled = !deepIndexEnabled
+                        if (deepIndexEnabled) {
+                            manager.enableDeepIndexMode()
+                        } else {
+                            manager.disableDeepIndexMode()
+                        }
+                    }
                 )
             }
         }
@@ -437,6 +480,20 @@ fun BoxedAgentLikeScreen(
     ) {
         PiSettingsTab(state = agentState, manager = manager, initialShowModelsEditor = true, onCloseEditor = { overlay = null })
     }
+    SideOverlay(
+        visible = showWorkspace,
+        fromStart = false,
+        title = "工作区",
+        subtitle = "选择文件夹作为工作区，管理代码文件",
+        onClose = { overlay = null }
+    ) {
+        WorkspaceSidePane(
+            state = agentState,
+            manager = manager,
+            onClose = { overlay = null },
+            onInsertComposer = { insert -> text = appendComposerText(text, insert) }
+        )
+    }
     }
     if ((forceShowConfigDialog || (needsAgentConfig && dismissedConfigPromptKey != configPromptKey)) && session != null && overlay == null && !showModelMenu) {
         AgentConfigRequiredDialog(
@@ -470,6 +527,19 @@ fun BoxedAgentLikeScreen(
         )
     }
     dialogMessage?.let { MessageDialog(it, onDismiss = { dialogMessage = null }) }
+    saveToWorkspaceMessageId?.let { msgId ->
+        InputDialogLite(
+            title = "保存到工作区",
+            initial = saveToWorkspaceFileName,
+            onDismiss = { saveToWorkspaceMessageId = null },
+            onConfirm = { name ->
+                manager.saveAssistantMessageToWorkspace(msgId, name) { ok, info ->
+                    dialogMessage = if (ok) "已保存到工作区：$info" else "保存失败：$info"
+                }
+                saveToWorkspaceMessageId = null
+            }
+        )
+    }
 }
 
 @Composable
@@ -574,6 +644,360 @@ private fun SessionsSidePane(state: AgentUiState, manager: PiAgentManager, onClo
     delete?.let { s -> ConfirmDialogLite("删除 Session", "删除 ${s.name}?", onDismiss = { delete = null }, onConfirm = { manager.deleteSession(s.id); delete = null }) }
 }
 
+/**
+ * 工作区侧边面板。
+ *
+ * 用户可以：
+ * 1. 点击"选择工作区文件夹"通过 SAF 选择一个文件夹作为工作区。
+ * 2. 浏览工作区中的文件和子目录。
+ * 3. 将工作区文件导入到 pi_workspace 容器内供 Agent 使用。
+ * 4. 将工作区文件内容作为文本引用插入到输入框。
+ * 5. 将工作区文件作为附件发送给 Agent。
+ * 6. 将容器内文件导出到工作区。
+ * 7. 清除当前工作区。
+ */
+@Composable
+private fun WorkspaceSidePane(
+    state: AgentUiState,
+    manager: PiAgentManager,
+    onClose: () -> Unit,
+    onInsertComposer: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val ws = state.workspace
+
+    // SAF 文件夹选择器
+    val pickFolder = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            }
+            manager.setWorkspace(uri)
+        }
+    }
+
+    var showExportDialog by remember { mutableStateOf(false) }
+    var exportPath by remember { mutableStateOf("") }
+    var importFeedback by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(ws.hasWorkspace, ws.currentPath) {
+        if (ws.hasWorkspace && ws.files.isEmpty() && !ws.loading) {
+            manager.refreshWorkspaceFiles(ws.currentPath)
+        }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Card(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(
+                        Icons.Rounded.Folder,
+                        contentDescription = null,
+                        tint = if (ws.hasWorkspace) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            if (ws.hasWorkspace) ws.workspaceName.ifBlank { "工作区" } else "工作区",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (ws.hasWorkspace) {
+                            Text(
+                                ws.workspaceUri,
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        } else {
+                            Text("未选择工作区文件夹", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+
+                if (!ws.hasWorkspace) {
+                    Text(
+                        "选择一个文件夹作为工作区后，Agent 生成的代码文件可以保存到这里，你也可以将工作区文件传输给 Agent 使用。",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        lineHeight = 18.sp
+                    )
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { pickFolder.launch(null) },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Rounded.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (ws.hasWorkspace) "更换工作区" else "选择工作区文件夹")
+                    }
+                    if (ws.hasWorkspace) {
+                        OutlinedButton(onClick = { manager.clearWorkspace() }) {
+                            Text("清除")
+                        }
+                    }
+                }
+
+                if (ws.hasWorkspace) {
+                    OutlinedButton(
+                        onClick = { showExportDialog = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Rounded.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("从容器导出文件到工作区")
+                    }
+                }
+            }
+        }
+
+        ws.error?.let { err ->
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text(err, Modifier.padding(12.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.onErrorContainer)
+            }
+        }
+
+        importFeedback?.let { feedback ->
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                    Text(feedback, fontSize = 12.sp, color = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { importFeedback = null }) { Text("关闭") }
+                }
+            }
+        }
+
+        if (ws.hasWorkspace) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text("路径：", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (ws.currentPath.isBlank()) {
+                    Text("根目录", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                } else {
+                    TextButton(
+                        onClick = { manager.refreshWorkspaceFiles("") },
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                    ) { Text("根目录", fontSize = 12.sp) }
+                    val parts = ws.currentPath.split('/').filter { it.isNotBlank() }
+                    parts.forEachIndexed { index, part ->
+                        Text("/", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (index == parts.lastIndex) {
+                            Text(part, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        } else {
+                            val target = parts.take(index + 1).joinToString("/")
+                            TextButton(
+                                onClick = { manager.refreshWorkspaceFiles(target) },
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                            ) { Text(part, fontSize = 12.sp) }
+                        }
+                    }
+                }
+            }
+
+            if (ws.loading) {
+                Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            } else if (ws.files.isEmpty()) {
+                EmptySideCard("工作区为空", "此文件夹中没有文件。点击下方刷新按钮重新加载。")
+            } else {
+                LazyColumn(
+                    Modifier.weight(1f).fillMaxWidth(),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (ws.currentPath.isNotBlank()) {
+                        item(key = "__parent__") {
+                            Surface(
+                                onClick = { manager.navigateWorkspace("..") },
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Icon(Icons.Rounded.ArrowUpward, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                                    Text("..", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+
+                    items(ws.files, key = { it.documentId }) { entry ->
+                        WorkspaceFileRow(
+                            entry = entry,
+                            onOpen = {
+                                if (entry.isDirectory) {
+                                    manager.navigateWorkspace(entry.name)
+                                }
+                            },
+                            onImport = {
+                                manager.importWorkspaceFileToContainer(entry) { ok, msg ->
+                                    importFeedback = if (ok) "已导入 ${entry.name} 到容器：$msg" else "导入失败：$msg"
+                                }
+                            },
+                            onInsertText = {
+                                scope.launch {
+                                    val content = manager.readWorkspaceFileAsText(entry)
+                                    if (content != null) {
+                                        val snippet = if (content.length > 2000) content.take(2000) + "\n... (已截断，共 ${content.length} 字符)" else content
+                                        onInsertComposer("\n\n```${entry.name.substringAfterLast('.', "")}\n$snippet\n```\n")
+                                        importFeedback = "已将 ${entry.name} 内容插入输入框"
+                                    }
+                                }
+                            },
+                            onSendAsAttachment = {
+                                scope.launch {
+                                    val attachment = manager.readWorkspaceFileAsAttachment(entry)
+                                    if (attachment != null) {
+                                        importFeedback = "已读取 ${entry.name}（${attachment.bytes.size} 字节），请在主界面发送"
+                                    }
+                                }
+                            }
+                        )
+                    }
+                    item { Spacer(Modifier.height(24.dp)) }
+                }
+            }
+
+            Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = { manager.refreshWorkspaceFiles(ws.currentPath) }) {
+                    Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("刷新")
+                }
+            }
+        } else {
+            Spacer(Modifier.weight(1f))
+        }
+    }
+
+    if (showExportDialog) {
+        AlertDialog(
+            onDismissRequest = { showExportDialog = false },
+            title = { Text("导出容器文件到工作区") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("输入容器内文件的相对路径（相对于 /root/pi_workspace）：", fontSize = 13.sp)
+                    OutlinedTextField(
+                        value = exportPath,
+                        onValueChange = { exportPath = it },
+                        placeholder = { Text("例如：output.py") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (exportPath.isNotBlank()) {
+                        manager.exportFileToWorkspace(exportPath.trim()) { ok, msg ->
+                            importFeedback = if (ok) "已导出到工作区：$msg" else "导出失败：$msg"
+                        }
+                        showExportDialog = false
+                        exportPath = ""
+                    }
+                }) { Text("导出") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExportDialog = false; exportPath = "" }) { Text("取消") }
+            }
+        )
+    }
+}
+
+/** 工作区文件行。 */
+@Composable
+private fun WorkspaceFileRow(
+    entry: WorkspaceFileEntry,
+    onOpen: () -> Unit,
+    onImport: () -> Unit,
+    onInsertText: () -> Unit,
+    onSendAsAttachment: () -> Unit
+) {
+    var showMenu by remember { mutableStateOf(false) }
+    val colors = MaterialTheme.colorScheme
+    Surface(
+        onClick = onOpen,
+        shape = RoundedCornerShape(8.dp),
+        color = colors.surface
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Icon(
+                if (entry.isDirectory) Icons.Rounded.Folder else Icons.Rounded.Description,
+                contentDescription = null,
+                tint = if (entry.isDirectory) colors.primary else colors.onSurfaceVariant,
+                modifier = Modifier.size(22.dp)
+            )
+            Column(Modifier.weight(1f)) {
+                Text(entry.name, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    if (entry.isDirectory) "文件夹" else formatFileSize(entry.size),
+                    fontSize = 11.sp,
+                    color = colors.onSurfaceVariant
+                )
+            }
+            if (!entry.isDirectory) {
+                Box {
+                    IconButton(onClick = { showMenu = true }, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Rounded.MoreVert, contentDescription = "操作", modifier = Modifier.size(20.dp))
+                    }
+                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("导入到容器") },
+                            onClick = { showMenu = false; onImport() },
+                            leadingIcon = { Icon(Icons.Rounded.FileUpload, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("插入到输入框") },
+                            onClick = { showMenu = false; onInsertText() },
+                            leadingIcon = { Icon(Icons.AutoMirrored.Rounded.TextSnippet, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("作为附件发送") },
+                            onClick = { showMenu = false; onSendAsAttachment() },
+                            leadingIcon = { Icon(Icons.Rounded.AttachFile, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 格式化文件大小。 */
+private fun formatFileSize(bytes: Long): String {
+    if (bytes < 1024) return "${bytes} B"
+    if (bytes < 1024 * 1024) return "%.1f KB".format(bytes / 1024.0)
+    if (bytes < 1024 * 1024 * 1024) return "%.1f MB".format(bytes / (1024.0 * 1024))
+    return "%.2f GB".format(bytes / (1024.0 * 1024 * 1024))
+}
+
 @Composable
 private fun ToolsSidePane(
     state: AgentUiState,
@@ -587,7 +1011,7 @@ private fun ToolsSidePane(
 ) {
     var tab by remember { mutableStateOf(AgentToolTab.Files) }
     Column(Modifier.fillMaxSize()) {
-        TabRow(selectedTabIndex = tab.ordinal) {
+        PrimaryTabRow(selectedTabIndex = tab.ordinal) {
             AgentToolTab.entries.forEach { t ->
                 Tab(
                     selected = tab == t,
@@ -650,11 +1074,31 @@ private fun QuickJumpButton(icon: ImageVector, contentDescription: String, onCli
 }
 
 @Composable
-private fun EmptyAgentTopBar(onSessions: () -> Unit, onTools: () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun EmptyAgentTopBar(onSessions: () -> Unit, onTools: () -> Unit, onWorkspace: () -> Unit, hasWorkspace: Boolean, workspaceName: String) {
+    val colors = MaterialTheme.colorScheme
+    Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         IconButton(onClick = onSessions) { Icon(Icons.Rounded.Menu, contentDescription = "Sessions") }
         Text("IDAdroid Agent", fontSize = 23.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-        IconButton(onClick = onTools) { Icon(Icons.Rounded.FormatListBulleted, contentDescription = "Tools") }
+        Surface(
+            onClick = onWorkspace,
+            shape = RoundedCornerShape(10.dp),
+            color = if (hasWorkspace) colors.primaryContainer.copy(alpha = 0.7f) else colors.surfaceContainerHighest,
+            contentColor = if (hasWorkspace) colors.onPrimaryContainer else colors.onSurfaceVariant,
+            modifier = Modifier.height(34.dp)
+        ) {
+            Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Icon(Icons.Rounded.Folder, contentDescription = "工作区", modifier = Modifier.size(18.dp))
+                Text(
+                    if (hasWorkspace) workspaceName.ifBlank { "工作区" } else "工作区",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 80.dp)
+                )
+            }
+        }
+        IconButton(onClick = onTools) { Icon(Icons.AutoMirrored.Rounded.FormatListBulleted, contentDescription = "Tools") }
     }
 }
 
@@ -678,8 +1122,11 @@ private fun ChatTopBar(
     autoCompact: Boolean,
     isWorking: Boolean,
     status: String,
+    workspaceName: String,
+    hasWorkspace: Boolean,
     onSessions: () -> Unit,
     onTools: () -> Unit,
+    onWorkspace: () -> Unit,
     onRefresh: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
@@ -694,7 +1141,27 @@ private fun ChatTopBar(
                 isWorking -> StatusChip("working")
                 status == "error" -> StatusChip("error")
             }
-            IconButton(onClick = onTools, modifier = Modifier.size(38.dp)) { Icon(Icons.Rounded.FormatListBulleted, contentDescription = "Tools", modifier = Modifier.size(28.dp), tint = colors.onSurfaceVariant) }
+            // 工作区按钮：显示当前工作区状态，点击打开工作区面板
+            Surface(
+                onClick = onWorkspace,
+                shape = RoundedCornerShape(10.dp),
+                color = if (hasWorkspace) colors.primaryContainer.copy(alpha = 0.7f) else colors.surfaceContainerHighest,
+                contentColor = if (hasWorkspace) colors.onPrimaryContainer else colors.onSurfaceVariant,
+                modifier = Modifier.height(34.dp)
+            ) {
+                Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Icon(Icons.Rounded.Folder, contentDescription = "工作区", modifier = Modifier.size(18.dp))
+                    Text(
+                        if (hasWorkspace) workspaceName.ifBlank { "工作区" } else "工作区",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = 80.dp)
+                    )
+                }
+            }
+            IconButton(onClick = onTools, modifier = Modifier.size(38.dp)) { Icon(Icons.AutoMirrored.Rounded.FormatListBulleted, contentDescription = "Tools", modifier = Modifier.size(28.dp), tint = colors.onSurfaceVariant) }
             IconButton(onClick = onRefresh, modifier = Modifier.size(38.dp)) { Icon(Icons.Rounded.Refresh, contentDescription = "刷新", modifier = Modifier.size(28.dp), tint = colors.onSurfaceVariant) }
         }
         TopStatsLine(stats, autoCompact, Modifier.fillMaxWidth().padding(start = 48.dp, end = 2.dp))
@@ -766,7 +1233,7 @@ private fun ProcessingCard() {
 }
 
 @Composable
-private fun MessageBubble(message: ChatMessage, autoOpenProgress: Boolean, isLatestMessage: Boolean, streaming: Boolean, onShowDialog: () -> Unit) {
+private fun MessageBubble(message: ChatMessage, autoOpenProgress: Boolean, isLatestMessage: Boolean, streaming: Boolean, onShowDialog: () -> Unit, onSaveToWorkspace: () -> Unit = {}) {
     when (message.role) {
         "user" -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             Surface(color = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary, shape = RoundedCornerShape(22.dp, 22.dp, 6.dp, 22.dp), modifier = Modifier.widthIn(max = 330.dp)) {
@@ -780,7 +1247,7 @@ private fun MessageBubble(message: ChatMessage, autoOpenProgress: Boolean, isLat
             message.thinking?.takeIf { it.isNotBlank() }?.let { ExpandableBlock("思考过程", it, autoOpen = autoOpenProgress, autoCollapse = !isLatestMessage, stateKey = message.id) }
             if (message.text.isNotBlank()) MarkdownishText(message.text, selectable = true, lightweight = streaming) else Spacer(Modifier.height(1.dp))
             AttachmentGallery(message.attachments)
-            if (message.text.isNotBlank()) AssistantActions(message.text, onShowDialog)
+            if (message.text.isNotBlank()) AssistantActions(message.text, onShowDialog, onSaveToWorkspace)
         }
         "tool" -> ToolMessageCard(message, autoOpen = autoOpenProgress, autoCollapse = !isLatestMessage)
         "system" -> SystemMessageCard(message.text)
@@ -834,29 +1301,161 @@ private fun AttachmentGallery(attachments: List<ChatAttachment>) {
 }
 
 @Composable
-private fun AssistantActions(text: String, onShowDialog: () -> Unit) {
+private fun AssistantActions(text: String, onShowDialog: () -> Unit, onSaveToWorkspace: () -> Unit = {}) {
     val clipboard = LocalClipboardManager.current
     val color = MaterialTheme.colorScheme.onSurfaceVariant
     Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = { clipboard.setText(AnnotatedString(text)) }, modifier = Modifier.size(34.dp)) { Icon(Icons.Rounded.ContentCopy, contentDescription = "复制", tint = color) }
+        IconButton(onClick = onSaveToWorkspace, modifier = Modifier.size(34.dp)) { Icon(Icons.Rounded.SaveAlt, contentDescription = "保存到工作区", tint = color) }
         IconButton(onClick = onShowDialog, modifier = Modifier.size(34.dp)) { Icon(Icons.Rounded.OpenInFull, contentDescription = "查看完整内容", tint = color) }
     }
 }
 
 @Composable
 private fun MarkdownishText(text: String, selectable: Boolean = false, lightweight: Boolean = false) {
-    val blocks = remember(text, lightweight) { if (lightweight) listOf(MdBlock.Text(text)) else parseMarkdownBlocks(text) }
+    // 流式输出时也解析 Markdown，但使用 streaming 模式处理未闭合的代码块，
+    // 这样代码块在生成过程中就能正确高亮显示，而不是"粘成一坨"的原始文本。
+    //
+    // 关键优化：流式期间 text 会以每秒数十~数百次的频率变化，若每次都立即
+    // parseMarkdownBlocks 整段文本，长回复下是 O(n^2) 的开销，主线程会被
+    // 打爆、UI 卡顿，反而让 delta "攒成一坨"才渲染。这里在流式模式下把喂给
+    // 解析器的文本节流到约 30fps：用一个轮询 LaunchedEffect 周期性把最新
+    // text 同步到 displayText，parseMarkdownBlocks 只在 displayText 变化时
+    // 才重跑。非流式（最终态）则保持即时解析，确保最终结果完整准确。
+    val latestText by rememberUpdatedState(text)
+    var displayText by remember { mutableStateOf(text) }
+    LaunchedEffect(lightweight) {
+        if (lightweight) {
+            // 流式：节拍同步最新文本（约 30fps），避免每个字符都触发全量重解析
+            while (isActive) {
+                displayText = latestText
+                delay(33)
+            }
+        } else {
+            // 非流式：直接用最终文本，保证完整准确
+            displayText = latestText
+        }
+    }
+    val blocks = remember(displayText, lightweight) {
+        if (lightweight) parseMarkdownBlocks(displayText, streaming = true) else parseMarkdownBlocks(displayText, streaming = false)
+    }
+    val showCursor = lightweight
     val content: @Composable () -> Unit = {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            blocks.forEach { block ->
+            blocks.forEachIndexed { index, block ->
                 when (block) {
                     is MdBlock.Code -> CodeBlock(block.language.ifBlank { "code" }, block.code)
-                    is MdBlock.Text -> MarkdownTextBlock(block.text)
+                    is MdBlock.Text -> {
+                        if (showCursor && index == blocks.lastIndex) {
+                            MarkdownTextBlockWithCursor(block.text)
+                        } else {
+                            MarkdownTextBlock(block.text)
+                        }
+                    }
                 }
+            }
+            // 如果流式输出中最后一个块是代码块，在代码块下方显示游标
+            if (showCursor && blocks.isNotEmpty() && blocks.last() is MdBlock.Code) {
+                StreamingCursorIndicator()
             }
         }
     }
     if (selectable) SelectionContainer { content() } else content()
+}
+
+/** 流式输出闪烁游标指示器。 */
+@Composable
+private fun StreamingCursorIndicator() {
+    val infiniteTransition = rememberInfiniteTransition(label = "streaming_cursor")
+    val alpha by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 0.15f,
+        animationSpec = infiniteRepeatable(animation = tween(550, easing = LinearEasing), repeatMode = RepeatMode.Reverse),
+        label = "cursor_alpha"
+    )
+    val colors = MaterialTheme.colorScheme
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Box(
+            Modifier
+                .size(width = 8.dp, height = 18.dp)
+                .background(colors.primary.copy(alpha = alpha), RoundedCornerShape(2.dp))
+        )
+        Text(
+            "生成中",
+            fontSize = 11.sp,
+            color = colors.primary.copy(alpha = alpha * 0.8f),
+            fontWeight = FontWeight.Medium
+        )
+    }
+}
+
+/** 带闪烁游标的 Markdown 文本块（用于流式输出的最后一段文本）。 */
+@Composable
+private fun MarkdownTextBlockWithCursor(text: String) {
+    val infiniteTransition = rememberInfiniteTransition(label = "text_cursor")
+    val alpha by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 0.2f,
+        animationSpec = infiniteRepeatable(animation = tween(550, easing = LinearEasing), repeatMode = RepeatMode.Reverse),
+        label = "text_cursor_alpha"
+    )
+    val colors = MaterialTheme.colorScheme
+    val dark = colors.isDarkLike()
+    val inlineCodeBackground = if (dark) Color(0xFF312D36) else Color(0xFFE8EAF6)
+    val inlineCodeColor = if (dark) Color(0xFFEADDFF) else Color(0xFF5B3DB5)
+    val paragraphs = remember(text) { text.split(MarkdownParagraphBreakRegex).filter { it.isNotBlank() } }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        paragraphs.forEachIndexed { paraIndex, para ->
+            val lines = para.lines()
+            val heading = lines.firstOrNull()?.let { MarkdownHeadingRegex.find(it) }
+            when {
+                heading != null && lines.size == 1 -> {
+                    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(
+                            inlineMarkdown(heading.groupValues[2], colors.onSurface, inlineCodeBackground, inlineCodeColor),
+                            color = colors.onSurface,
+                            fontSize = if (heading.groupValues[1].length <= 2) 22.sp else 18.sp,
+                            fontWeight = FontWeight.Black,
+                            lineHeight = if (heading.groupValues[1].length <= 2) 28.sp else 24.sp
+                        )
+                        if (paraIndex == paragraphs.lastIndex) {
+                            Box(Modifier.size(width = 7.dp, height = 20.dp).background(colors.primary.copy(alpha = alpha), RoundedCornerShape(2.dp)))
+                        }
+                    }
+                }
+                lines.all { isMarkdownBullet(it) } -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        lines.forEachIndexed { lineIndex, line ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.Top) {
+                                Text(markdownBulletMarker(line), color = colors.primary, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                                Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        inlineMarkdown(markdownBulletText(line), colors.onSurface, inlineCodeBackground, inlineCodeColor),
+                                        style = TextStyle(fontSize = 16.sp, lineHeight = 24.sp)
+                                    )
+                                    if (paraIndex == paragraphs.lastIndex && lineIndex == lines.lastIndex) {
+                                        Box(Modifier.size(width = 7.dp, height = 18.dp).background(colors.primary.copy(alpha = alpha), RoundedCornerShape(2.dp)))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                else -> {
+                    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            inlineMarkdown(para, colors.onSurface, inlineCodeBackground, inlineCodeColor),
+                            style = TextStyle(fontSize = 16.sp, lineHeight = 24.sp),
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (paraIndex == paragraphs.lastIndex) {
+                            Box(Modifier.size(width = 7.dp, height = 18.dp).background(colors.primary.copy(alpha = alpha), RoundedCornerShape(2.dp)))
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 private sealed interface MdBlock {
@@ -864,16 +1463,50 @@ private sealed interface MdBlock {
     data class Code(val language: String, val code: String) : MdBlock
 }
 
-private fun parseMarkdownBlocks(text: String): List<MdBlock> {
+/**
+ * 解析 Markdown 文本为块列表。
+ * @param streaming 流式模式：当为 true 时，会处理未闭合的代码块（``` 已开始但未结束），
+ *                  将其作为正在输入的代码块返回，这样流式输出时代码块也能正确高亮。
+ */
+private fun parseMarkdownBlocks(text: String, streaming: Boolean = false): List<MdBlock> {
     val out = mutableListOf<MdBlock>()
-    val re = Regex("```([^\\n`]*)\\n([\\s\\S]*?)```")
-    var last = 0
-    for (match in re.findAll(text)) {
-        if (match.range.first > last) out += MdBlock.Text(text.substring(last, match.range.first).trim('\n'))
-        out += MdBlock.Code(match.groupValues[1].trim(), match.groupValues[2].trimEnd('\n'))
-        last = match.range.last + 1
+    val fenceStart = Regex("```([^\\n`]*)\\n")
+    val fenceEnd = "```"
+    var pos = 0
+    while (pos < text.length) {
+        val fenceMatch = fenceStart.find(text, pos)
+        if (fenceMatch == null) {
+            // 没有更多代码块开始标记
+            val remaining = text.substring(pos).trim('\n')
+            if (remaining.isNotBlank()) out += MdBlock.Text(remaining)
+            break
+        }
+        // 代码块开始前的文本
+        if (fenceMatch.range.first > pos) {
+            val before = text.substring(pos, fenceMatch.range.first).trim('\n')
+            if (before.isNotBlank()) out += MdBlock.Text(before)
+        }
+        val language = fenceMatch.groupValues[1].trim()
+        val codeStart = fenceMatch.range.last + 1
+        val endIdx = text.indexOf(fenceEnd, codeStart)
+        if (endIdx == -1) {
+            // 代码块未闭合
+            if (streaming) {
+                // 流式模式：将未闭合部分作为正在输入的代码块
+                val partialCode = text.substring(codeStart).trimEnd('\n')
+                out += MdBlock.Code(language, partialCode)
+            } else {
+                // 非流式：将未闭合部分作为普通文本
+                val partial = text.substring(fenceMatch.range.first).trim('\n')
+                if (partial.isNotBlank()) out += MdBlock.Text(partial)
+            }
+            break
+        }
+        // 完整代码块
+        val code = text.substring(codeStart, endIdx).trimEnd('\n')
+        out += MdBlock.Code(language, code)
+        pos = endIdx + fenceEnd.length
     }
-    if (last < text.length) out += MdBlock.Text(text.substring(last).trim('\n'))
     return out.filterNot { it is MdBlock.Text && it.text.isBlank() }
 }
 
@@ -1144,7 +1777,7 @@ private fun toolKindAccent(kind: ToolKind): Color = when (kind) {
 private fun toolIcon(kind: ToolKind): ImageVector = when (kind) {
     ToolKind.Read -> Icons.Rounded.Visibility
     ToolKind.Edit -> Icons.Rounded.Edit
-    ToolKind.Write -> Icons.Rounded.NoteAdd
+    ToolKind.Write -> Icons.AutoMirrored.Rounded.NoteAdd
     ToolKind.Bash -> Icons.Rounded.Terminal
     ToolKind.Ls -> Icons.Rounded.Folder
     ToolKind.Grep -> Icons.Rounded.Search
@@ -1601,7 +2234,9 @@ private fun ChatComposer(
     manager: PiAgentManager,
     onOpenConfig: () -> Unit,
     onSend: (String?) -> Unit,
-    onAbort: () -> Unit
+    onAbort: () -> Unit,
+    deepIndexEnabled: Boolean = false,
+    onToggleDeepIndex: () -> Unit = {}
 ) {
     Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp), color = MaterialTheme.colorScheme.surfaceContainerLow, contentColor = MaterialTheme.colorScheme.onSurface, shape = RoundedCornerShape(28.dp)) {
         Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1629,6 +2264,37 @@ private fun ChatComposer(
                 ComposerIconButton(Icons.Rounded.Add, "更多", onClick = { onShowCompactMenu(true) })
                 if (isWorking && !canSend) FilledIconButton(onClick = onAbort, modifier = Modifier.size(38.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.error)) { Icon(Icons.Rounded.Stop, contentDescription = "中止", modifier = Modifier.size(22.dp)) }
                 else FilledIconButton(onClick = { if (isWorking) onShowSendModeMenu(true) else onSend(null) }, enabled = canSend && state.canUseActiveSession, modifier = Modifier.size(38.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = if (canSend && state.canUseActiveSession) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (canSend && state.canUseActiveSession) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant, disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .55f))) { Icon(Icons.Rounded.ArrowUpward, contentDescription = "发送", modifier = Modifier.size(22.dp)) }
+            }
+            // ── Deep Index Mode toggle ──
+            // Combines CodeGraph + ECC + codebase-memory-mcp into one tool chain.
+            Surface(
+                modifier = Modifier.fillMaxWidth().clickable { onToggleDeepIndex() },
+                shape = RoundedCornerShape(16.dp),
+                color = if (deepIndexEnabled) MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surfaceContainerHighest
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        Icons.Rounded.AccountTree,
+                        contentDescription = null,
+                        tint = if (deepIndexEnabled) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text("深度索引模式", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (deepIndexEnabled) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onSurface)
+                        Text(
+                            if (deepIndexEnabled) "已开启 · CodeGraph + ECC + Memory 联动分析" else "点击开启 CodeGraph / ECC / codebase-memory 联合工具链",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (deepIndexEnabled) {
+                        Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(18.dp))
+                    }
+                }
             }
         }
     }
@@ -1693,7 +2359,7 @@ private fun ChatOptionSheets(
         }
     }
     if (showCompactMenu) ModalBottomSheet(onDismissRequest = { onShowCompactMenu(false) }) { SheetHeader(Icons.Rounded.Tune, "Compact / 更多", "上下文与附加操作"); ListItem(headlineContent = { Text("自动 Compact") }, supportingContent = { Text(if (autoCompact) "已开启" else "点击开启") }, leadingContent = { Icon(Icons.Rounded.Settings, contentDescription = null, tint = if (autoCompact) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) }, modifier = Modifier.clickable { onShowCompactMenu(false); manager.setAutoCompaction(true) }); ListItem(headlineContent = { Text("手动 Compact") }, supportingContent = { Text("仅手动触发") }, leadingContent = { Icon(if (!autoCompact) Icons.Rounded.CheckCircle else Icons.Rounded.Settings, contentDescription = null) }, modifier = Modifier.clickable { onShowCompactMenu(false); manager.setAutoCompaction(false) }); ListItem(headlineContent = { Text("立即执行 Compact") }, supportingContent = { Text(if (text.isBlank()) "压缩当前上下文" else "使用输入内容作为要求") }, leadingContent = { Icon(Icons.Rounded.Archive, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }, modifier = Modifier.clickable { onShowCompactMenu(false); manager.compact(text.trim().ifBlank { null }); onTextChange("") }); Spacer(Modifier.height(18.dp)) }
-    if (showSendModeMenu) ModalBottomSheet(onDismissRequest = { onShowSendModeMenu(false) }) { SheetHeader(Icons.Rounded.Send, "发送方式", "选择队列策略"); ListItem(headlineContent = { Text("立即发送") }, supportingContent = { Text("中断当前 turn") }, leadingContent = { Icon(Icons.Rounded.FlashOn, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }, modifier = Modifier.clickable { onShowSendModeMenu(false); onSend(null) }); ListItem(headlineContent = { Text("Steer 队列") }, supportingContent = { Text("注入当前 turn") }, leadingContent = { Icon(Icons.Rounded.Send, contentDescription = null) }, modifier = Modifier.clickable { onShowSendModeMenu(false); onSend("steer") }); ListItem(headlineContent = { Text("Follow-up 队列") }, supportingContent = { Text("完成后发送") }, leadingContent = { Icon(Icons.Rounded.Queue, contentDescription = null) }, modifier = Modifier.clickable { onShowSendModeMenu(false); onSend("followUp") }); Spacer(Modifier.height(18.dp)) }
+    if (showSendModeMenu) ModalBottomSheet(onDismissRequest = { onShowSendModeMenu(false) }) { SheetHeader(Icons.AutoMirrored.Rounded.Send, "发送方式", "选择队列策略"); ListItem(headlineContent = { Text("立即发送") }, supportingContent = { Text("中断当前 turn") }, leadingContent = { Icon(Icons.Rounded.FlashOn, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }, modifier = Modifier.clickable { onShowSendModeMenu(false); onSend(null) }); ListItem(headlineContent = { Text("Steer 队列") }, supportingContent = { Text("注入当前 turn") }, leadingContent = { Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = null) }, modifier = Modifier.clickable { onShowSendModeMenu(false); onSend("steer") }); ListItem(headlineContent = { Text("Follow-up 队列") }, supportingContent = { Text("完成后发送") }, leadingContent = { Icon(Icons.Rounded.Queue, contentDescription = null) }, modifier = Modifier.clickable { onShowSendModeMenu(false); onSend("followUp") }); Spacer(Modifier.height(18.dp)) }
 }
 
 @Composable
@@ -1810,7 +2476,15 @@ private fun mergeUiModels(primary: List<PiModel>, fallback: List<PiModel>): List
 }
 
 @Composable private fun TinyMetaChip(text: String, selected: Boolean = false) { val colors = MaterialTheme.colorScheme; Surface(shape = RoundedCornerShape(999.dp), color = if (selected) colors.primary.copy(alpha = .12f) else colors.surfaceContainerHighest, contentColor = if (selected) colors.primary else colors.onSurfaceVariant, border = BorderStroke(1.dp, if (selected) colors.primary.copy(alpha = .28f) else colors.outlineVariant)) { Text(text, Modifier.padding(horizontal = 6.dp, vertical = 2.dp), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) } }
-private fun thinkingDescription(level: String): String = when (level) { "off" -> "关闭扩展思考"; "minimal" -> "最少推理"; "low" -> "低强度思考"; "medium" -> "默认平衡"; "high" -> "更强推理"; "xhigh" -> "超高推理"; else -> "" }
+private fun thinkingDescription(level: String): String = when (level) {
+    "off" -> "关闭扩展思考 — 直接回答，速度最快"
+    "minimal" -> "极少推理 — 仅快速判断，适合简单任务"
+    "low" -> "低强度思考 — 基本分析，适合常规逆向任务"
+    "medium" -> "默认平衡 — 推理深度与速度兼顾，推荐大多数场景"
+    "high" -> "高强度思考 — 深入分析，适合复杂逻辑和加壳混淆"
+    "xhigh" -> "极致推理 — 最大深度推理，适合最难的问题和大型二进制"
+    else -> ""
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1846,9 +2520,9 @@ private fun SessionRow(session: AgentSessionRecord, active: Boolean, onSelect: (
 private fun ToolsSheet(state: AgentUiState, guiState: GuiSessionState, manager: PiAgentManager, onDismiss: () -> Unit, onOpenTerminal: () -> Unit, onLaunchGui: () -> Unit, onInsertComposer: (String) -> Unit) {
     var tab by remember { mutableStateOf(AgentToolTab.Files) }
     ModalBottomSheet(onDismissRequest = onDismiss) {
-        SheetHeader(Icons.Rounded.FormatListBulleted, "Tools", "Terminal、Files、Pi、IDA")
+        SheetHeader(Icons.AutoMirrored.Rounded.FormatListBulleted, "Tools", "Terminal、Files、Pi、IDA")
         Column(Modifier.fillMaxWidth().heightIn(max = 720.dp)) {
-            TabRow(selectedTabIndex = tab.ordinal) { AgentToolTab.entries.forEach { t -> Tab(selected = tab == t, onClick = { tab = t }, icon = { Icon(when (t) { AgentToolTab.Terminal -> Icons.Rounded.Terminal; AgentToolTab.Files -> Icons.Rounded.Folder; AgentToolTab.Pi -> Icons.Rounded.Settings; AgentToolTab.Ida -> Icons.Rounded.Code }, contentDescription = null) }, text = { Text(when (t) { AgentToolTab.Terminal -> "Terminal"; AgentToolTab.Files -> "Files"; AgentToolTab.Pi -> "Pi"; AgentToolTab.Ida -> "IDA" }) }) } }
+            PrimaryTabRow(selectedTabIndex = tab.ordinal) { AgentToolTab.entries.forEach { t -> Tab(selected = tab == t, onClick = { tab = t }, icon = { Icon(when (t) { AgentToolTab.Terminal -> Icons.Rounded.Terminal; AgentToolTab.Files -> Icons.Rounded.Folder; AgentToolTab.Pi -> Icons.Rounded.Settings; AgentToolTab.Ida -> Icons.Rounded.Code }, contentDescription = null) }, text = { Text(when (t) { AgentToolTab.Terminal -> "Terminal"; AgentToolTab.Files -> "Files"; AgentToolTab.Pi -> "Pi"; AgentToolTab.Ida -> "IDA" }) }) } }
             Box(Modifier.fillMaxWidth().heightIn(min = 520.dp, max = 640.dp)) { when (tab) { AgentToolTab.Terminal -> TerminalToolTab(onOpenTerminal); AgentToolTab.Files -> FileBrowserTab(manager, onInsertComposer); AgentToolTab.Pi -> PiSettingsTab(state, manager); AgentToolTab.Ida -> IdaToolTab(guiState, onLaunchGui, onOpenTerminal, onInsertComposer, onDismiss) } }
         }
     }
@@ -1878,9 +2552,9 @@ private fun FileBrowserTab(manager: PiAgentManager, onInsertComposer: (String) -
     fun openFile(entry: FileEntry) { if (entry.type != "file") return; scope.launch { error = null; runCatching { manager.fileForSharing(entry.path) }.onSuccess { file -> runCatching { RootfsFileSharing.openFile(context, file) }.onFailure { error = "打开失败：${it.message}" } }.onFailure { error = "打开失败：${it.message}" } } }
     fun saveAs(entry: FileEntry) { if (entry.type != "file") return; saveAsEntry = entry; saveAsLauncher.launch(entry.name) }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) { FilledTonalIconButton(onClick = { path = parentPath(path) }, modifier = Modifier.size(36.dp)) { Icon(Icons.Rounded.ArrowUpward, contentDescription = "上级", modifier = Modifier.size(19.dp)) }; FilledTonalIconButton(onClick = { reload() }, modifier = Modifier.size(36.dp)) { Icon(Icons.Rounded.Refresh, contentDescription = "刷新", modifier = Modifier.size(19.dp)) }; FilledTonalButton(onClick = { pickUpload.launch(arrayOf("*/*")) }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Icon(Icons.Rounded.Upload, contentDescription = null, modifier = Modifier.size(17.dp)); Spacer(Modifier.width(4.dp)); Text("上传", fontSize = 13.sp) }; OutlinedButton(onClick = { createKind = "file"; createName = "" }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Icon(Icons.Rounded.NoteAdd, contentDescription = null, modifier = Modifier.size(17.dp)); Spacer(Modifier.width(4.dp)); Text("文件", fontSize = 13.sp) }; OutlinedButton(onClick = { createKind = "dir"; createName = "" }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Icon(Icons.Rounded.CreateNewFolder, contentDescription = null, modifier = Modifier.size(17.dp)); Spacer(Modifier.width(4.dp)); Text("目录", fontSize = 13.sp) } }
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) { FilledTonalIconButton(onClick = { path = parentPath(path) }, modifier = Modifier.size(36.dp)) { Icon(Icons.Rounded.ArrowUpward, contentDescription = "上级", modifier = Modifier.size(19.dp)) }; FilledTonalIconButton(onClick = { reload() }, modifier = Modifier.size(36.dp)) { Icon(Icons.Rounded.Refresh, contentDescription = "刷新", modifier = Modifier.size(19.dp)) }; FilledTonalButton(onClick = { pickUpload.launch(arrayOf("*/*")) }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Icon(Icons.Rounded.Upload, contentDescription = null, modifier = Modifier.size(17.dp)); Spacer(Modifier.width(4.dp)); Text("上传", fontSize = 13.sp) }; OutlinedButton(onClick = { createKind = "file"; createName = "" }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Icon(Icons.AutoMirrored.Rounded.NoteAdd, contentDescription = null, modifier = Modifier.size(17.dp)); Spacer(Modifier.width(4.dp)); Text("文件", fontSize = 13.sp) }; OutlinedButton(onClick = { createKind = "dir"; createName = "" }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Icon(Icons.Rounded.CreateNewFolder, contentDescription = null, modifier = Modifier.size(17.dp)); Spacer(Modifier.width(4.dp)); Text("目录", fontSize = 13.sp) } }
         Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surfaceContainerHighest, shape = RoundedCornerShape(10.dp)) { Row(Modifier.padding(horizontal = 10.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) { Icon(Icons.Rounded.FolderOpen, contentDescription = null, modifier = Modifier.size(17.dp), tint = MaterialTheme.colorScheme.primary); BasicTextField(value = path, onValueChange = { path = it.ifBlank { "." } }, singleLine = true, textStyle = TextStyle(fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface, fontFamily = FontFamily.Monospace), modifier = Modifier.weight(1f)) } }
-        createKind?.let { kind -> Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(10.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) { Row(Modifier.padding(8.dp), horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) { Icon(if (kind == "dir") Icons.Rounded.CreateNewFolder else Icons.Rounded.NoteAdd, contentDescription = null, tint = MaterialTheme.colorScheme.primary); OutlinedTextField(createName, { createName = it }, label = { Text(if (kind == "dir") "目录名" else "文件名") }, singleLine = true, modifier = Modifier.weight(1f)); TextButton(onClick = { createKind = null; createName = "" }) { Text("取消") }; Button(onClick = { val name = createName.trim(); if (!isSafeFileName(name)) { error = "名称不能包含 /、\\ 或 .."; return@Button }; scope.launch { if (kind == "dir") manager.mkdir(if (path == ".") name else "$path/$name") else manager.uploadFile(path, DraftAttachment(name, "text/plain", ByteArray(0), false)); createKind = null; createName = ""; reload() } }, enabled = createName.isNotBlank()) { Text("创建") } } } }
+        createKind?.let { kind -> Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(10.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) { Row(Modifier.padding(8.dp), horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) { Icon(if (kind == "dir") Icons.Rounded.CreateNewFolder else Icons.AutoMirrored.Rounded.NoteAdd, contentDescription = null, tint = MaterialTheme.colorScheme.primary); OutlinedTextField(createName, { createName = it }, label = { Text(if (kind == "dir") "目录名" else "文件名") }, singleLine = true, modifier = Modifier.weight(1f)); TextButton(onClick = { createKind = null; createName = "" }) { Text("取消") }; Button(onClick = { val name = createName.trim(); if (!isSafeFileName(name)) { error = "名称不能包含 /、\\ 或 .."; return@Button }; scope.launch { if (kind == "dir") manager.mkdir(if (path == ".") name else "$path/$name") else manager.uploadFile(path, DraftAttachment(name, "text/plain", ByteArray(0), false)); createKind = null; createName = ""; reload() } }, enabled = createName.isNotBlank()) { Text("创建") } } } }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surfaceContainerLowest, shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) { LazyColumn(Modifier.fillMaxSize()) { item { FileHeaderRow() }; items(entries.sortedWith(compareBy<FileEntry> { it.type != "directory" }.thenBy { it.name.lowercase() }), key = { it.path }) { entry -> FileRow(entry, onOpen = { if (entry.type == "directory") path = entry.path else openFile(entry) }, onAttach = { onInsertComposer(manager.fileRef(manager.workspaceAbsPath(entry.path))) }, onMore = { actionEntry = entry }) }; if (!loading && entries.isEmpty()) item { Text("空目录", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
@@ -1924,7 +2598,8 @@ private fun PiSettingsTab(
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { ElevatedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) { Text("Pi config", fontWeight = FontWeight.Bold); Text("PI_CODING_AGENT_DIR: ${snapshot.materializedDir}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
         item { state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) } }
-        item { ModelCatalogStatusCard(snapshot.modelCatalog) }
+        // ── Visual AI config editor (replaces raw JSON editing) ──
+        item { AiConfigEditor(snapshot = snapshot, onSnapshotChange = { snapshot = it }) }
         item {
             SettingsCard("模型与运行参数") {
                 DefaultModelPicker(
@@ -1935,10 +2610,10 @@ private fun PiSettingsTab(
                 OutlinedTextField(snapshot.enabledModels, { snapshot = snapshot.copy(enabledModels = it) }, label = { Text("enabledModels") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             }
         }
-        item { SettingsCard("JSON 配置") { OutlinedButton(onClick = { onOpenFullScreenEditor?.invoke() ?: run { showModelsEditor = true } }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Tune, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("全屏可视化编辑 models.json") }; Text("按 Provider / Compat / Model 分组编辑，保存后会写回 Agent models.json。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp); CodeTextField("环境变量 JSON", snapshot.envText) { snapshot = snapshot.copy(envText = it) }; CodeTextField("models.json", snapshot.modelsText) { value -> snapshot = snapshot.copy(modelsText = value, modelCatalog = parseAgentModelCatalog(value)) }; CodeTextField("settings.json", snapshot.settingsText) { snapshot = snapshot.copy(settingsText = it) } } }
+        item { SettingsCard("settings.json") { CodeTextField("settings.json", snapshot.settingsText) { snapshot = snapshot.copy(settingsText = it) } } }
         item { SettingsCard("插件与启动参数") { Text("每行一个传给 pi RPC 进程的额外参数，保存后重启 Session 生效。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp); CodeTextField("extraArgs", snapshot.extraArgsText) { snapshot = snapshot.copy(extraArgsText = it) } } }
         item { SettingsCard("系统提示词追加") { CodeTextField("APPEND_SYSTEM.md", snapshot.appendSystem) { snapshot = snapshot.copy(appendSystem = it) } } }
-        item { Button(onClick = { manager.savePiConfig(snapshot) }, modifier = Modifier.fillMaxWidth()) { Text("保存 Pi 配置") } }
+        item { Button(onClick = { manager.savePiConfig(snapshot) }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Save, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("保存 Pi 配置") } }
     }
 }
 

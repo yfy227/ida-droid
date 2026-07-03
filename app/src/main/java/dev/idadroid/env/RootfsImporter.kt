@@ -94,7 +94,7 @@ class RootfsImporter(
                     report(ImportStage.Preflight, 0.02f, warning)
                 }
 
-                stagingEnv = paths.stagingEnvDir()
+                stagingEnv = paths.stagingEnvDir(System.currentTimeMillis())
                 stagingEnv.deleteRecursively()
                 stagingEnv.mkdirs()
                 stagingLog = paths.stagingImportLog(stagingEnv)
@@ -381,7 +381,12 @@ class RootfsImporter(
 
     private fun atomicActivate(stagingEnv: File, activeEnv: File) {
         val envsDir = paths.envsDir.apply { mkdirs() }
-        val backup = File(envsDir, "${activeEnv.name}.previous-${System.currentTimeMillis()}")
+        // Use a unique backup name; if a collision somehow occurs, try incrementally.
+        var backup = File(envsDir, "${activeEnv.name}.previous-${System.currentTimeMillis()}")
+        var attempt = 0
+        while (backup.exists() && attempt < 10) {
+            backup = File(envsDir, "${activeEnv.name}.previous-${System.currentTimeMillis()}-${++attempt}")
+        }
         if (backup.exists()) backup.deleteRecursively()
 
         if (activeEnv.exists()) {

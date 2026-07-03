@@ -2,33 +2,53 @@ package dev.idadroid.mcp
 
 import android.content.Context
 import android.system.Os
+import android.util.Log
 import dev.idadroid.env.EnvironmentPaths
 import dev.idadroid.proot.IdaProotRuntime
+import dev.idadroid.util.safePid
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.time.Instant
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 
 class IdaMcpSessionManager(
     context: Context,
-    private val paths: EnvironmentPaths = EnvironmentPaths.of(context)
+    private val paths: EnvironmentPaths = EnvironmentPaths.of(context),
+    private val settingsStore: dev.idadroid.settings.IdaDroidSettings? = null
 ) {
     private val appContext = context.applicationContext
     private val runtime = IdaProotRuntime(appContext, paths = paths)
+    private val fileTransferManager = FileTransferManager(appContext, paths)
+    private val fileTransferServer = FileTransferHttpServer(fileTransferManager)
+    private val watchdogScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile private var watchdogJob: Job? = null
+    @Volatile private var monitoringEnabled: Boolean = settingsStore?.mcpSettings?.value?.autoRestart ?: true
+    private val autoRestartCount = AtomicInteger(0)
+    @Volatile private var lastHealthCheckAt: Long = 0L
+    @Volatile private var lastHealthOk: Boolean = false
+
+    /** Exposed so the UI can trigger host→container file transfers. */
+    val transfers: FileTransferManager get() = fileTransferManager
 
     private val _state = MutableStateFlow(
         IdaMcpSessionState(
             status = IdaMcpStatus.Stopped,
             message = "未启动",
-            settings = IdaMcpLaunchSettings()
+            settings = currentLaunchSettings()
         )
     )
     val state: StateFlow<IdaMcpSessionState> = _state.asStateFlow()
@@ -37,24 +57,47 @@ class IdaMcpSessionManager(
         _state.value = _state.value.copy(settings = settings.sanitized())
     }
 
+    /** Build launch settings from the central IdaDroidSettings store (if available). */
+    private fun currentLaunchSettings(): IdaMcpLaunchSettings {
+        val mcp = settingsStore?.mcpSettings?.value ?: return IdaMcpLaunchSettings()
+        return IdaMcpLaunchSettings(
+            bindHost = mcp.bindHost,
+            port = mcp.port,
+            allowOrigin = mcp.allowOrigin,
+            stateless = mcp.stateless,
+            sessionKeepAliveSecs = mcp.sessionKeepAliveSecs,
+            sseKeepAliveSecs = mcp.sseKeepAliveSecs
+        )
+    }
+
+    /** Refresh state from settings — call after the user changes MCP settings. */
+    fun refreshFromSettings() {
+        val refreshed = currentLaunchSettings()
+        _state.value = _state.value.copy(settings = refreshed.sanitized())
+        monitoringEnabled = settingsStore?.mcpSettings?.value?.autoRestart ?: true
+    }
+
     suspend fun start(settings: IdaMcpLaunchSettings = _state.value.settings): Result<IdaMcpSessionState> {
         val launchSettings = settings.sanitized()
         updateSettings(launchSettings)
         if (!startStopMutex.tryLock()) {
-            val current = _state.value.copy(
-                status = IdaMcpStatus.Starting,
-                message = "IDA MCP 正在启动，请稍候…",
-                settings = launchSettings
-            )
+            // Another start/stop is already in progress; reflect that in state and fail.
+            val current = _state.value.let {
+                if (it.status == IdaMcpStatus.Starting || it.status == IdaMcpStatus.Running) it
+                else it.copy(status = IdaMcpStatus.Starting, message = "IDA MCP 正在启动，请稍候…", settings = launchSettings)
+            }
             _state.value = current
-            return Result.success(current)
+            return Result.failure(IllegalStateException("IDA MCP 正在启动或停止，请稍候…"))
         }
         try {
             val startResult = withContext(Dispatchers.IO) {
                 runCatching {
                     require(paths.readyMarker.isFile && paths.rootfsDir.isDirectory) { "rootfs 尚未 ready，请先导入并验证环境" }
-                    val binary = File(paths.rootfsDir, "root/ida-pro-9.3/ida-mcp")
-                    require(binary.isFile) { "缺少 /root/ida-pro-9.3/ida-mcp" }
+                    val idaHome = settingsStore?.envSettings?.value?.idaHome ?: dev.idadroid.settings.IdaDroidSettings.DEFAULT_IDA_HOME
+                    val idaHomeGuest = idaHome.trimEnd('/')
+                    val idaHomeHost = idaHomeGuest.trimStart('/')
+                    val binary = File(paths.rootfsDir, "$idaHomeHost/ida-mcp")
+                    require(binary.isFile) { "缺少 $idaHomeGuest/ida-mcp" }
                     runCatching { Os.chmod(binary.absolutePath, 493) }
                     materializeLogDir()
 
@@ -98,6 +141,14 @@ class IdaMcpSessionManager(
 
                     val running = runningState(launchSettings, "IDA MCP HTTP 已启动：${launchSettings.endpoint}")
                     _state.value = running
+                    // Start the file-transfer HTTP bridge so the agent inside the
+                    // container can discover and open host-transferred files.
+                    runCatching { fileTransferServer.start() }
+                        .onFailure { Log.w("IdaMcpSessionManager", "file transfer server failed to start", it) }
+                    // Start the health-monitoring watchdog so the service
+                    // auto-recovers if Android kills the process or the port
+                    // stops responding.
+                    startWatchdog(launchSettings)
                     running
                 }.onFailure { error ->
                     if (_state.value.status == IdaMcpStatus.Starting) {
@@ -119,6 +170,8 @@ class IdaMcpSessionManager(
         try {
             return withContext(Dispatchers.IO) {
                 runCatching {
+                    stopWatchdog()
+                    fileTransferServer.stop()
                     val settings = _state.value.settings
                     activeProcess?.let { process ->
                         if (process.isAlive) {
@@ -188,15 +241,20 @@ class IdaMcpSessionManager(
         endpoint = settings.endpoint,
         pid = activeProcess.safePid(),
         message = message,
-        startedAt = _state.value.startedAt ?: System.currentTimeMillis()
+        startedAt = _state.value.startedAt ?: System.currentTimeMillis(),
+        monitoringEnabled = monitoringEnabled,
+        lastHealthCheckAt = if (lastHealthCheckAt > 0) lastHealthCheckAt else null,
+        lastHealthOk = lastHealthOk,
+        autoRestartCount = autoRestartCount.get()
     )
 
     private fun buildStartCommand(settings: IdaMcpLaunchSettings): String = buildString {
+        val idaHome = (settingsStore?.envSettings?.value?.idaHome ?: dev.idadroid.settings.IdaDroidSettings.DEFAULT_IDA_HOME).trimEnd('/')
         appendLine("set -e")
-        appendLine("cd /root/ida-pro-9.3")
-        appendLine("export IDADIR=/root/ida-pro-9.3")
-        appendLine("export LD_LIBRARY_PATH=/root/ida-pro-9.3:\${LD_LIBRARY_PATH:-}")
-        append("exec /root/ida-pro-9.3/ida-mcp serve-http")
+        appendLine("cd $idaHome")
+        appendLine("export IDADIR=$idaHome")
+        appendLine("export LD_LIBRARY_PATH=$idaHome:\${LD_LIBRARY_PATH:-}")
+        append("exec $idaHome/ida-mcp serve-http")
         append(" --bind ").append(IdaProotRuntime.shellQuote(settings.bind))
         append(" --allow-origin ").append(IdaProotRuntime.shellQuote(settings.allowOrigin))
         if (settings.allowHost.isNotBlank()) {
@@ -208,11 +266,14 @@ class IdaMcpSessionManager(
         appendLine()
     }
 
-    private fun buildStopCommand(settings: IdaMcpLaunchSettings): String = """
-        set +e
-        pkill -f '/root/ida-pro-9.3/ida-mcp serve-http' 2>/dev/null || true
-        pkill -f 'ida-mcp serve-http --bind ${settings.bind}' 2>/dev/null || true
-    """.trimIndent()
+    private fun buildStopCommand(settings: IdaMcpLaunchSettings): String {
+        val idaHomeKill = (settingsStore?.envSettings?.value?.idaHome ?: dev.idadroid.settings.IdaDroidSettings.DEFAULT_IDA_HOME).trimEnd('/')
+        return """
+            set +e
+            pkill -f '${idaHomeKill}/ida-mcp serve-http' 2>/dev/null || true
+            pkill -f 'ida-mcp serve-http --bind ${settings.bind}' 2>/dev/null || true
+        """.trimIndent()
+    }
 
     private fun isTcpOpen(port: Int): Boolean = runCatching {
         Socket().use { socket ->
@@ -252,13 +313,83 @@ class IdaMcpSessionManager(
 
     private fun logFile(): File = File(paths.logsDir, "ida-mcp-http.log")
 
-    private fun Process?.safePid(): Int? = null
+    @Volatile private var activeProcess: Process? = null
+
+    // ==================== Health Monitor / Watchdog ====================
+
+    /**
+     * Enable or disable the health-monitoring watchdog. When enabled (default),
+     * the manager periodically checks whether the MCP process is alive and the
+     * port is responding, and auto-restarts the service if it has died.
+     */
+    fun setMonitoringEnabled(enabled: Boolean) {
+        monitoringEnabled = enabled
+        if (!enabled) stopWatchdog()
+    }
+
+    fun isMonitoringEnabled(): Boolean = monitoringEnabled
+
+    /** One-shot health probe — updates [lastHealthOk] and returns the result. */
+    suspend fun healthCheck(): Boolean = withContext(Dispatchers.IO) {
+        val process = activeProcess
+        val settings = _state.value.settings
+        val alive = process?.isAlive == true
+        val portOpen = isTcpOpen(settings.port)
+        val ok = alive && portOpen
+        lastHealthOk = ok
+        lastHealthCheckAt = System.currentTimeMillis()
+        if (!ok && _state.value.status == IdaMcpStatus.Running) {
+            _state.value = _state.value.copy(
+                status = IdaMcpStatus.Error,
+                message = "健康检查失败：进程${if (alive) "存活" else "已退出"}，端口${if (portOpen) "开放" else "无响应"}"
+            )
+        }
+        ok
+    }
+
+    private fun startWatchdog(settings: IdaMcpLaunchSettings) {
+        stopWatchdog()
+        watchdogJob = watchdogScope.launch {
+            Log.i("IdaMcpSessionManager", "Watchdog started for port ${settings.port}")
+            while (isActive && monitoringEnabled) {
+                delay(WATCHDOG_INTERVAL_MS)
+                try {
+                    val process = activeProcess
+                    val alive = process?.isAlive == true
+                    val portOpen = isTcpOpen(settings.port)
+                    lastHealthCheckAt = System.currentTimeMillis()
+                    lastHealthOk = alive && portOpen
+
+                    if (!alive || !portOpen) {
+                        // Process died or port stopped responding while we think
+                        // it should be running — attempt auto-restart.
+                        if (_state.value.status == IdaMcpStatus.Running && monitoringEnabled) {
+                            val count = autoRestartCount.incrementAndGet()
+                            Log.w("IdaMcpSessionManager", "Watchdog detected failure (alive=$alive, port=$portOpen), auto-restart #$count")
+                            _state.value = _state.value.copy(
+                                status = IdaMcpStatus.Starting,
+                                message = "监控检测到服务中断，正在自动重启…（第 $count 次）"
+                            )
+                            runCatching { start(settings) }
+                                .onFailure { Log.e("IdaMcpSessionManager", "Auto-restart failed", it) }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("IdaMcpSessionManager", "Watchdog check failed", e)
+                }
+            }
+        }
+    }
+
+    private fun stopWatchdog() {
+        watchdogJob?.cancel()
+        watchdogJob = null
+        lastHealthOk = false
+    }
 
     companion object {
         private val startStopMutex = Mutex()
-
-        @Volatile
-        private var activeProcess: Process? = null
+        private const val WATCHDOG_INTERVAL_MS = 15_000L
     }
 }
 
@@ -297,5 +428,9 @@ data class IdaMcpSessionState(
     val endpoint: String = settings.endpoint,
     val pid: Int? = null,
     val message: String = "",
-    val startedAt: Long? = null
+    val startedAt: Long? = null,
+    val monitoringEnabled: Boolean = true,
+    val lastHealthCheckAt: Long? = null,
+    val lastHealthOk: Boolean = false,
+    val autoRestartCount: Int = 0
 )
