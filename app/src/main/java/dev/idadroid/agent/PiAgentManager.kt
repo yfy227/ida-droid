@@ -7,7 +7,6 @@ import dev.idadroid.env.PiWorkspaceMaterializer
 import dev.idadroid.proot.ProotBinaryInstaller
 import java.io.File
 import java.time.Instant
-import kotlinx.serialization.decodeFromString
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job

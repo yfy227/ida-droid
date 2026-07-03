@@ -39,13 +39,11 @@ import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.NetworkCheck
 import androidx.compose.material.icons.rounded.Public
-import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -80,7 +78,10 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.idadroid.agent.ConfigExport
+import dev.idadroid.agent.EndpointCompleter
 import dev.idadroid.agent.PiConfigSnapshot
+import dev.idadroid.agent.TestResult
 import dev.idadroid.agent.parseAgentModelCatalog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -507,7 +508,7 @@ private fun ProviderCard(
                 )
                 // 端点补全提示
                 if (provider.baseUrl.isNotBlank() && !provider.baseUrl.endsWith("#")) {
-                    val completed = dev.idadroid.agent.EndpointCompleter.complete(provider.baseUrl, provider.id)
+                    val completed = EndpointCompleter.complete(provider.baseUrl, provider.id)
                     if (completed != provider.baseUrl.trim().removeSuffix("/")) {
                         Text(
                             "→ 实际请求: $completed",
@@ -886,12 +887,8 @@ private fun validateApiKeyFormat(providerId: String, apiKey: String): Boolean {
 
 // ─── Connection testing & model fetching ──────────────────────────────────────
 
-private data class TestResult(
-    val success: Boolean,
-    val httpCode: Int,
-    val message: String,
-    val availableModels: List<String> = emptyList()
-)
+// TestResult is reused from dev.idadroid.agent (AiConfigTools.kt)
+// to avoid a duplicate definition.
 
 /**
  * 测试 Provider 连接。
@@ -921,7 +918,7 @@ private fun testProviderConnection(provider: ProviderConfig): TestResult {
 
 /** OpenAI 风格: GET /models */
 private fun testOpenAiStyleConnection(provider: ProviderConfig): TestResult {
-    val baseUrl = dev.idadroid.agent.EndpointCompleter.complete(provider.baseUrl, provider.id)
+    val baseUrl = EndpointCompleter.complete(provider.baseUrl, provider.id)
     val modelsUrl = when {
         baseUrl.contains("/chat/completions") -> baseUrl.removeSuffix("/chat/completions") + "/models"
         baseUrl.contains("/v1/") -> baseUrl.substringBefore("/v1/") + "/v1/models"
@@ -1133,7 +1130,7 @@ private fun fetchGeminiModels(provider: ProviderConfig): List<String> {
 // ─── Config export / import ───────────────────────────────────────────────────
 
 private fun exportConfig(snapshot: PiConfigSnapshot): String {
-    val export = dev.idadroid.agent.ConfigExport(
+    val export = ConfigExport(
         defaultProvider = snapshot.defaultProvider,
         defaultModel = snapshot.defaultModel,
         defaultThinkingLevel = snapshot.defaultThinkingLevel,
@@ -1146,13 +1143,13 @@ private fun exportConfig(snapshot: PiConfigSnapshot): String {
         exportedAt = System.currentTimeMillis()
     )
     return kotlinx.serialization.json.Json { prettyPrint = true; encodeDefaults = true }
-        .encodeToString(dev.idadroid.agent.ConfigExport.serializer(), export)
+        .encodeToString(ConfigExport.serializer(), export)
 }
 
 private fun parseImportedConfig(json: String): PiConfigSnapshot? {
     return try {
         val export = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
-            .decodeFromString(dev.idadroid.agent.ConfigExport.serializer(), json)
+            .decodeFromString(ConfigExport.serializer(), json)
         PiConfigSnapshot(
             defaultProvider = export.defaultProvider,
             defaultModel = export.defaultModel,
@@ -1163,7 +1160,7 @@ private fun parseImportedConfig(json: String): PiConfigSnapshot? {
             envText = export.envText.ifBlank { "{}" },
             appendSystem = export.appendSystem,
             extraArgsText = export.extraArgsText,
-            modelCatalog = dev.idadroid.agent.parseAgentModelCatalog(export.modelsText.ifBlank { "{}" })
+            modelCatalog = parseAgentModelCatalog(export.modelsText.ifBlank { "{}" })
         )
     } catch (_: Exception) {
         null
