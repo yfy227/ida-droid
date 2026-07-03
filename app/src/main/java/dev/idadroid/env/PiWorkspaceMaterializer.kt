@@ -240,26 +240,44 @@ class PiWorkspaceMaterializer {
             printf '%s\n' "${D}path"
         }
 
-        # 打开文件时先检查是否有最近上传的文件匹配，如果有则提示用户确认
+        # 打开文件：先查已上传的，没有就通过 HTTP bridge 在主机搜索并自动传输
         cmd_open() {
             [ ${D}# -ge 1 ] || die "usage: idadroid-file open <name>"
             local needle="${D}1"
-            local path
+            shift || true
+            local path=""
 
-            # 先尝试在已上传文件中查找匹配
-            if path=$(find_path "${D}needle" 2>/dev/null); then
-                echo "idadroid-file: 找到已上传文件 → ${D}path"
-                shift
+            # 1. 先在 .mcp-transfer 里找
+            path=$(find_path "${D}needle" 2>/dev/null || true)
+            if [ -n "${D}path" ] && [ -f "${D}path" ]; then
+                echo "idadroid-file: 已在传输目录中找到 → ${D}path"
                 if command -v mcpc >/dev/null 2>&1; then
                     exec mcpc call open_file --path "${D}path" "${D}@"
                 else
-                    echo "idadroid-file: mcpc not found, printing path for manual use:" >&2
                     printf '%s\n' "${D}path"
                 fi
                 return
             fi
 
-            # 没有精确匹配，检查是否有最近上传的文件可以推荐
+            # 2. 通过 HTTP bridge 在主机端搜索文件，找到后自动传进容器
+            if command -v curl >/dev/null 2>&1; then
+                local resp
+                resp=$(curl -fsS --max-time 30 -X POST "http://${D}{MCP_HOST}:${D}{MCP_PORT}/api/transfer-and-open?name=${D}(printf '%s' "${D}needle" | sed 's/ /%20/g')" 2>/dev/null || true)
+                if [ -n "${D}resp" ] && echo "${D}resp" | grep -q '"prootPath"'; then
+                    path=$(printf '%s' "${D}resp" | sed -n 's/.*"prootPath"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+                    echo "idadroid-file: 已从主机传输到容器 → ${D}path"
+                    if [ -n "${D}path" ] && [ -f "${D}path" ]; then
+                        if command -v mcpc >/dev/null 2>&1; then
+                            exec mcpc call open_file --path "${D}path" "${D}@"
+                        else
+                            printf '%s\n' "${D}path"
+                        fi
+                        return
+                    fi
+                fi
+            fi
+
+            # 3. 都没找到，检查最近上传
             local latest_json
             latest_json=$(fetch_latest 2>/dev/null || true)
             if [ -n "${D}latest_json" ] && echo "${D}latest_json" | grep -q '"prootPath"'; then
@@ -267,23 +285,16 @@ class PiWorkspaceMaterializer {
                 latest_name=$(printf '%s' "${D}latest_json" | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
                 latest_path=$(printf '%s' "${D}latest_json" | sed -n 's/.*"prootPath"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
                 if [ -n "${D}latest_path" ] && [ -f "${D}latest_path" ]; then
-                    echo "idadroid-file: 未找到匹配 '${D}needle' 的上传文件"
-                    echo "idadroid-file: 最近上传的文件: ${D}latest_name (${D}latest_path)"
-                    echo "idadroid-file: 要使用这个文件吗？使用 'idadroid-file open ${D}{latest_name}' 或直接 mcpc call open_file --path ${D}{latest_path}"
-                    # 返回提示但不自动打开 — 让 agent/用户决定
+                    echo "idadroid-file: 未找到 '${D}needle'，最近上传的文件: ${D}latest_name"
+                    echo "idadroid-file: 路径: ${D}latest_path"
+                    echo "要使用这个文件吗？使用 'idadroid-file open ${D}{latest_name}'"
                     return 0
                 fi
             fi
 
-            # 没有任何上传文件，回退到正常 mcpc 流程
-            echo "idadroid-file: no transferred file matching '${D}needle' — use normal mcpc flow"
-            shift
-            if command -v mcpc >/dev/null 2>&1; then
-                exec mcpc call open_file --path "${D}needle" "${D}@"
-            else
-                echo "idadroid-file: mcpc not found" >&2
-                exit 1
-            fi
+            echo "idadroid-file: 未找到文件 '${D}needle'"
+            echo "提示: 先通过 MCP 面板上传文件，或检查文件名是否正确"
+            return 1
         }
 
         # 检查最近上传的文件（不尝试打开）
@@ -313,14 +324,14 @@ Usage:
   idadroid-file list            列出所有已上传文件
   idadroid-file find <name>     查找文件路径（模糊匹配）
   idadroid-file path <name>     find 的别名
-  idadroid-file open <name>     打开文件（先查上传列表，无匹配则推荐最近上传）
+  idadroid-file open <name>     打开文件（自动搜索主机→传输→mcpc打开）
   idadroid-file latest          查看最近上传的文件
 
-当 agent 请求打开文件时，idadroid-file 会:
-1. 在已上传文件中查找匹配
-2. 找到则直接通过 mcpc 打开
-3. 未找到则检查最近上传的文件，返回推荐提示
-4. 无上传文件则回退到正常 mcpc 流程
+当 agent 请求打开文件时，idadroid-file open 会:
+1. 先在 .mcp-transfer/ 中查找已上传的文件
+2. 没找到则通过 HTTP bridge 在主机端搜索（/sdcard, Download 等）
+3. 主机端找到后自动传输进容器，然后用 mcpc call open_file 打开
+4. 主机端也没找到则推荐最近上传的文件
 EOF
         }
 

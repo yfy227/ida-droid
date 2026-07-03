@@ -177,6 +177,21 @@ class FileTransferHttpServer(
                 respondJson(output, 200, entryJson(entry))
             }
 
+            // 按文件名搜索主机并自动传输进容器——给 idadroid-file open 用
+            path == "/api/transfer-and-open" && method == "POST" -> {
+                val name = query["name"]
+                if (name.isNullOrBlank()) {
+                    respondJson(output, 400, "{\"error\":\"missing 'name' query parameter\"}")
+                    return
+                }
+                val entry = manager.findAndTransferByName(name)
+                if (entry != null) {
+                    respondJson(output, 200, entryJson(entry))
+                } else {
+                    respondJson(output, 404, "{\"error\":\"file not found on host: $name\"}")
+                }
+            }
+
             path == "/api/transfers" && method == "DELETE" -> {
                 val id = query["id"]
                 if (id.isNullOrBlank()) {

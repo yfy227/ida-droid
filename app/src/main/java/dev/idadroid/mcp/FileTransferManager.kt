@@ -161,6 +161,61 @@ class FileTransferManager(
         }
     }
 
+    /**
+     * 按文件名在主机端常见目录搜索，找到后传输进容器。
+     * 这是给 idadroid-file open 用的——agent 只需传文件名，
+     * 主机端自动搜索 /sdcard, /storage, Download 等目录，
+     * 找到后复制到 /root/.mcp-transfer/ 并返回容器路径。
+     */
+    suspend fun findAndTransferByName(name: String): TransferEntry? = withContext(Dispatchers.IO) {
+        val cleanName = name.trim().removePrefix("/")
+        // 已经在传输目录里？直接返回
+        findTransfer(cleanName)?.let { existing ->
+            val f = File(transferHostDir, existing.name)
+            if (f.isFile) return@withContext existing
+        }
+
+        // 在主机端搜索常见目录
+        val searchDirs = listOf(
+            File(System.getenv("HOME") ?: "/sdcard"),
+            File("/sdcard"),
+            File("/sdcard/Download"),
+            File("/sdcard/Documents"),
+            File("/storage/emulated/0"),
+            File("/storage/emulated/0/Download"),
+            File("/storage/emulated/0/Documents")
+        )
+
+        val needle = cleanName.lowercase()
+        for (dir in searchDirs) {
+            if (!dir.isDirectory) continue
+            // 先尝试精确匹配
+            val exact = File(dir, cleanName)
+            if (exact.isFile) {
+                return@withContext runCatching { transferHostPath(exact.absolutePath) }.getOrNull()
+            }
+            // 再尝试在子目录中搜索（最多2层）
+            val found = searchFile(dir, needle, maxDepth = 2)
+            if (found != null) {
+                return@withContext runCatching { transferHostPath(found.absolutePath) }.getOrNull()
+            }
+        }
+        null
+    }
+
+    private fun searchFile(dir: File, needleLower: String, maxDepth: Int): File? {
+        val files = dir.listFiles() ?: return null
+        for (f in files) {
+            if (f.isFile && f.name.lowercase().contains(needleLower)) {
+                return f
+            }
+            if (f.isDirectory && maxDepth > 0 && !f.name.startsWith(".")) {
+                searchFile(f, needleLower, maxDepth - 1)?.let { return it }
+            }
+        }
+        return null
+    }
+
     /** Removes a transfer entry (and deletes the underlying file) by id. */
     suspend fun removeTransfer(id: String): Boolean = withContext(Dispatchers.IO) {
         mutex.lock()
