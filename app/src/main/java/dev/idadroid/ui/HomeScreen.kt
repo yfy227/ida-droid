@@ -113,6 +113,7 @@ fun MainContent(
     onShowMcpLog: () -> Unit,
     onToggleMcpMonitoring: (Boolean) -> Unit = {},
     onMcpHealthCheck: () -> Unit = {},
+    onUploadToMcp: () -> Unit = {},
     onRevalidate: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -197,7 +198,8 @@ fun MainContent(
                 onRestartMcp = onRestartMcp,
                 onShowMcpLog = onShowMcpLog,
                 onToggleMonitoring = onToggleMcpMonitoring,
-                onHealthCheck = onMcpHealthCheck
+                onHealthCheck = onMcpHealthCheck,
+                onUploadToMcp = onUploadToMcp
             )
         }
         HomePanelOverlay(

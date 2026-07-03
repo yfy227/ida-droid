@@ -15,6 +15,7 @@ import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.HealthAndSafety
 import androidx.compose.material.icons.rounded.MonitorHeart
 import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.UploadFile
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -47,7 +48,8 @@ fun McpFunctionPanel(
     onRestartMcp: (IdaMcpLaunchSettings) -> Unit,
     onShowMcpLog: () -> Unit,
     onToggleMonitoring: (Boolean) -> Unit = {},
-    onHealthCheck: () -> Unit = {}
+    onHealthCheck: () -> Unit = {},
+    onUploadToMcp: () -> Unit = {}
 ) {
     var settings by remember(mcpState.settings) { mutableStateOf(mcpState.settings) }
     val running = mcpState.status == IdaMcpStatus.Running
@@ -144,6 +146,37 @@ fun McpFunctionPanel(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(onClick = { onRestartMcp(settings.sanitized()) }, enabled = !starting, modifier = Modifier.weight(1f).defaultMinSize(minWidth = 1.dp)) { Text("重启") }
                 OutlinedButton(onClick = onShowMcpLog, modifier = Modifier.weight(1f).defaultMinSize(minWidth = 1.dp)) { Text("查看日志") }
+            }
+        }
+        // ── 文件上传到 MCP 传输目录 ──
+        item {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Rounded.UploadFile,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("文件传输", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                    }
+                    Text(
+                        "选择文件上传到 /root/.mcp-transfer，agent 通过 idadroid-file open 可快速在 IDA 中打开。",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Button(onClick = onUploadToMcp, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Rounded.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("上传文件到 MCP")
+                    }
+                }
             }
         }
         // ── Health Monitor Panel ──

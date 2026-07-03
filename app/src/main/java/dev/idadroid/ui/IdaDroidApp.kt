@@ -232,6 +232,20 @@ fun IdaDroidApp() {
                 }
             }
 
+            val mcpUploadPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                if (uri != null) {
+                    scope.launch {
+                        runCatching { mcpManager.transfers.transferUri(uri) }
+                            .onSuccess { entry ->
+                                transientMessage = "已上传到 MCP: ${entry.name} → ${entry.prootPath}"
+                            }
+                            .onFailure { error ->
+                                transientMessage = "MCP 上传失败: ${error.message}"
+                            }
+                    }
+                }
+            }
+
             val snackbarHostState = remember { SnackbarHostState() }
             LaunchedEffect(transientMessage) {
                 transientMessage
@@ -360,6 +374,9 @@ fun IdaDroidApp() {
                             val ok = mcpManager.healthCheck()
                             transientMessage = if (ok) "健康检查通过" else "健康检查失败"
                         }
+                    },
+                    onUploadToMcp = {
+                        mcpUploadPicker.launch(arrayOf("*/*"))
                     },
                     onRevalidate = {
                         scope.launch {
