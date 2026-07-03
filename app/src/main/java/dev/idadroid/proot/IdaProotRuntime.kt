@@ -15,6 +15,22 @@ class IdaProotRuntime(
     private val hostTmpDir: File = paths.hostTmpDir
 ) {
     private val appContext = context.applicationContext
+    private val settings = dev.idadroid.settings.IdaDroidSettings(appContext)
+
+    /** 用户设置的工作区路径（容器内可见路径） */
+    private val workspacePath: String get() = settings.envSettings.value.workspacePath.ifBlank { DEFAULT_WORKSPACE }
+
+    /** 用户设置的工作区在主机文件系统上的路径（用于 proot --bind） */
+    private val workspaceHostPath: File? get() {
+        val ws = workspacePath.removePrefix("/")
+        // /root/pi_workspace → rootfsDir/root/pi_workspace
+        val hostFile = File(rootfsDir, ws)
+        if (hostFile.isDirectory) return hostFile
+        // 尝试 /sdcard 下的路径（proot 已绑定 /sdcard）
+        val sdcardFile = File("/sdcard", ws.removePrefix("sdcard/").removePrefix("storage/emulated/0/"))
+        if (sdcardFile.isDirectory) return sdcardFile
+        return null
+    }
 
     data class LaunchSpec(
         val command: List<String>,
@@ -41,10 +57,10 @@ class IdaProotRuntime(
         val timedOut: Boolean = false
     )
 
-    fun buildInteractiveLaunch(term: String = "xterm-256color", cwd: String = DEFAULT_WORKSPACE): TerminalLaunchSpec =
+    fun buildInteractiveLaunch(term: String = "xterm-256color", cwd: String = workspacePath): TerminalLaunchSpec =
         interactiveShellSpec(term = term, cwd = cwd)
 
-    fun interactiveShellSpec(term: String = "xterm-256color", cwd: String = DEFAULT_WORKSPACE): TerminalLaunchSpec {
+    fun interactiveShellSpec(term: String = "xterm-256color", cwd: String = workspacePath): TerminalLaunchSpec {
         val spec = interactiveLaunchSpec(term = term, cwd = cwd)
         return TerminalLaunchSpec(
             executable = spec.command.first(),
@@ -62,7 +78,7 @@ class IdaProotRuntime(
         return LaunchSpec(command, workingDirectory = paths.envDir.apply { mkdirs() }, environment = hostEnvironment())
     }
 
-    fun workspaceCommandSpec(script: String): LaunchSpec = commandSpec(script, cwd = DEFAULT_WORKSPACE)
+    fun workspaceCommandSpec(script: String): LaunchSpec = commandSpec(script, cwd = workspacePath)
 
     suspend fun run(script: String, timeoutMs: Long = 120_000): CommandResult = withContext(Dispatchers.IO) {
         val spec = commandSpec(script)
@@ -155,7 +171,7 @@ class IdaProotRuntime(
         "USER" to "root",
         "LOGNAME" to "root",
         "SHELL" to resolveGuestShell(),
-        "WORKSPACE" to DEFAULT_WORKSPACE,
+        "WORKSPACE" to workspacePath,
         "LANG" to "C.UTF-8",
         "LC_ALL" to "C.UTF-8",
         "NVM_DIR" to "/root/.nvm",
@@ -166,7 +182,7 @@ class IdaProotRuntime(
         "XDG_DATA_HOME" to "/root/.local/share",
         "XDG_CACHE_HOME" to "/root/.cache",
         "XDG_CONFIG_HOME" to "/root/.config",
-        "PI_CODING_AGENT_DIR" to "$DEFAULT_WORKSPACE/.idadroid/pi-agent",
+        "PI_CODING_AGENT_DIR" to "$workspacePath/.idadroid/pi-agent",
         "PI_SKIP_VERSION_CHECK" to "1",
         "PI_TELEMETRY" to "0"
     )
@@ -208,8 +224,8 @@ class IdaProotRuntime(
 
     private fun wrapScriptWithRuntimeBootstrap(script: String): String = """
         export HOME=/root
-        export WORKSPACE="$DEFAULT_WORKSPACE"
-        export PI_CODING_AGENT_DIR="$DEFAULT_WORKSPACE/.idadroid/pi-agent"
+        export WORKSPACE="$workspacePath"
+        export PI_CODING_AGENT_DIR="$workspacePath/.idadroid/pi-agent"
         export NVM_DIR="${'$'}{NVM_DIR:-/root/.nvm}"
         if [ -s "${'$'}NVM_DIR/nvm.sh" ]; then . "${'$'}NVM_DIR/nvm.sh" >/dev/null 2>&1 || true; fi
         for d in /root/.nvm/versions/node/*/bin /opt/nvm/versions/node/*/bin /root/.npm-global/bin /root/.local/bin /root/bin; do

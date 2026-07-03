@@ -35,7 +35,7 @@ class PiRpcRuntime(
     private val paths: EnvironmentPaths = EnvironmentPaths.of(context),
     private val proot: IdaProotRuntime = IdaProotRuntime(context, paths = paths)
 ) {
-    private val configManager = PiConfigManager(paths)
+    private val configManager = PiConfigManager(context, paths)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val pending = ConcurrentHashMap<String, CompletableDeferred<JsonElement>>()
     private val seq = AtomicLong(0)

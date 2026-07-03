@@ -38,7 +38,7 @@ class PiAgentManager(
     /** 工作区在主机文件系统上的根目录 */
     private val workspaceHostRoot: File get() = File(paths.rootfsDir, workspaceProotPath.removePrefix("/").removePrefix("root/"))
     private val repo = AgentSessionRepository(paths)
-    private val configManager = PiConfigManager(paths)
+    private val configManager = PiConfigManager(appContext, paths)
     val aiConfigTools = AiConfigTools(paths, configManager)
     private val attachmentManager = AttachmentManager(appContext, paths)
     val workspaceManager = WorkspaceManager(appContext, paths)

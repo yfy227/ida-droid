@@ -1,5 +1,6 @@
 package dev.idadroid.agent
 
+import android.content.Context
 import dev.idadroid.env.EnvironmentPaths
 import dev.idadroid.util.JsonFormats
 import java.io.File
@@ -10,9 +11,12 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
 class PiConfigManager(
+    private val context: Context,
     private val paths: EnvironmentPaths
 ) {
-    private val workspace get() = File(paths.rootfsDir, "root/pi_workspace")
+    private val appContext = context.applicationContext
+    private val settings = dev.idadroid.settings.IdaDroidSettings(appContext)
+    private val workspace get() = File(paths.rootfsDir, settings.envSettings.value.workspacePath.removePrefix("/").removePrefix("root/").ifBlank { "root/pi_workspace" })
     private val idaDroidDir get() = File(workspace, ".idadroid")
     private val agentDir get() = File(idaDroidDir, "pi-agent")
     private val piDir get() = File(workspace, ".pi")
@@ -121,18 +125,20 @@ class PiConfigManager(
         }
     """.trimIndent() + "\n"
 
-    private fun defaultAppendSystemPrompt(): String = defaultSystemAppendPrompt()
+    private fun defaultAppendSystemPrompt(): String = defaultSystemAppendPrompt(
+        workspacePath = settings.envSettings.value.workspacePath.ifBlank { "/root/pi_workspace" }
+    )
 }
 
 /** Single source of truth for the default APPEND_SYSTEM.md content. */
-fun defaultSystemAppendPrompt(): String = """
+fun defaultSystemAppendPrompt(workspacePath: String = "/root/pi_workspace"): String = """
 # IDAdroid — AI 逆向工程助手环境
 
 ## 你的身份
 你是一个运行在 IDAdroid proot rootfs 内的 AI 逆向工程助手。你拥有完整的 IDA Pro 9.3、ida-mcp、jadx、Python 和 Node.js 工具链，可以自主操作 IDA 进行二进制分析。
 
 ## 环境信息
-- 工作目录: /root/pi_workspace
+- 工作目录: $workspacePath
 - IDA 主目录: /root/ida-pro-9.3
 - ida-mcp 入口: /root/ida-pro-9.3/ida-mcp
 - ida-mcp 使用文档: /root/ida-pro-9.3/IDA_MCP_MCPC_USAGE.md
