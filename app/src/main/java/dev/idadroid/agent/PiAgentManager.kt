@@ -51,6 +51,8 @@ class PiAgentManager(
     // a similar coordination pattern in MessageCoordinationDelegate.
     private val sendMutex = kotlinx.coroutines.sync.Mutex()
     @Volatile private var sendingInProgress = false
+    /** 当主动 abort 上一轮对话时设为 true，收到 abort 错误事件后静默处理 */
+    @Volatile private var suppressAbortError = false
 
     // ==================== 流式 delta 合并器 ====================
     // 高频 text_delta / thinking_delta 事件会以每秒数十~数百次的频率到达，
@@ -228,7 +230,13 @@ class PiAgentManager(
                     "followUp" -> runtime.followUp(expanded.message)
                     else -> {
                         val wasWorking = _state.value.isWorking
-                        if (wasWorking) runCatching { runtime.abort() }
+                        if (wasWorking) {
+                            // abort 上一轮——标记为"主动中断"，后续的 abort 错误事件应被静默
+                            suppressAbortError = true
+                            runCatching { runtime.abort() }
+                            // 等待短暂时间让 abort 生效，避免新 prompt 和 abort 竞争
+                            kotlinx.coroutines.delay(300)
+                        }
                         // Wrap the prompt call with a timeout so a hung RPC
                         // doesn't leave the UI stuck in "working" forever.
                         runCatching {
@@ -832,6 +840,13 @@ class PiAgentManager(
     }
 
     private fun appendSystemError(message: String) {
+        // 主动 abort 时不显示 abort 错误
+        if (suppressAbortError) {
+            if (message.contains("abort", ignoreCase = true) || message.contains("Request was aborted")) {
+                suppressAbortError = false
+                return
+            }
+        }
         val text = formatAgentErrorMessage(message)
         _state.update { old ->
             if (old.messages.lastOrNull()?.let { it.role == "system" && it.text == text } == true) old
