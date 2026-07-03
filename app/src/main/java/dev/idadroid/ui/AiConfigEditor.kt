@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CloudDownload
@@ -249,12 +250,16 @@ fun AiConfigEditor(
         parsed.providers.firstOrNull { it.id == snapshot.defaultProvider }
             ?: parsed.providers.firstOrNull()
             ?: run {
-                // 没有已配置的 provider，用第一个预设创建一个空的
                 val p = PROVIDER_PRESETS.first()
                 ProviderConfig(id = p.id, displayName = p.displayName, baseUrl = p.baseUrl, envKey = p.envKey, color = p.color, apiKey = "", models = emptyList())
             }
     }
     val preset = presetById(currentProvider.id) ?: PROVIDER_PRESETS.last()
+
+    // 本地输入缓冲 — 避免每次按键都触发 snapshot 重算导致输入被覆盖
+    var baseUrlInput by remember(currentProvider.id) { mutableStateOf(currentProvider.baseUrl) }
+    var apiKeyInput by remember(currentProvider.id) { mutableStateOf(currentProvider.apiKey) }
+    var modelInput by remember(currentProvider.id) { mutableStateOf(snapshot.defaultModel) }
 
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         // ── 状态提示 ──
@@ -293,14 +298,18 @@ fun AiConfigEditor(
                     }
                 }
 
-                // Base URL (自动填充，可编辑)
+                // Base URL (自动填充，可编辑) — 本地缓冲，失焦写回
                 OutlinedTextField(
-                    value = currentProvider.baseUrl,
-                    onValueChange = { newUrl -> updateProvider(snapshot, parsed, currentProvider.copy(baseUrl = newUrl), onSnapshotChange) },
+                    value = baseUrlInput,
+                    onValueChange = { baseUrlInput = it },
                     label = { Text("Base URL") },
                     leadingIcon = { Icon(Icons.Rounded.Public, contentDescription = null) },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = {
+                        updateProvider(snapshot, parsed, currentProvider.copy(baseUrl = baseUrlInput), onSnapshotChange)
+                    })
                 )
                 // 端点补全提示
                 if (currentProvider.baseUrl.isNotBlank() && !currentProvider.baseUrl.endsWith("#")) {
@@ -310,17 +319,20 @@ fun AiConfigEditor(
                     }
                 }
 
-                // API Key
+                // API Key — 本地缓冲，失焦写回
                 var showKey by remember { mutableStateOf(false) }
                 OutlinedTextField(
-                    value = currentProvider.apiKey,
-                    onValueChange = { newKey -> updateProvider(snapshot, parsed, currentProvider.copy(apiKey = newKey), onSnapshotChange) },
+                    value = apiKeyInput,
+                    onValueChange = { apiKeyInput = it },
                     label = { Text("API Key") },
                     leadingIcon = { Icon(Icons.Rounded.Key, contentDescription = null) },
                     trailingIcon = { IconButton(onClick = { showKey = !showKey }) { Icon(if (showKey) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, contentDescription = if (showKey) "隐藏" else "显示") } },
                     visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = {
+                        updateProvider(snapshot, parsed, currentProvider.copy(apiKey = apiKeyInput.trim()), onSnapshotChange)
+                    }),
                     modifier = Modifier.fillMaxWidth()
                 )
                 // Key 格式校验提示
@@ -330,14 +342,18 @@ fun AiConfigEditor(
                     }
                 }
 
-                // Model Name + 拉取按钮
+                // Model Name + 选择按钮 — 本地缓冲，失焦写回
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     OutlinedTextField(
-                        value = snapshot.defaultModel,
-                        onValueChange = { onSnapshotChange(snapshot.copy(defaultModel = it, defaultProvider = currentProvider.id)) },
+                        value = modelInput,
+                        onValueChange = { modelInput = it },
                         label = { Text("Model") },
                         singleLine = true,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = {
+                            onSnapshotChange(snapshot.copy(defaultModel = modelInput.trim(), defaultProvider = currentProvider.id))
+                        })
                     )
                     IconButton(onClick = { showModelPicker = true }) {
                         Icon(Icons.Rounded.ExpandMore, contentDescription = "选择模型")
@@ -351,7 +367,10 @@ fun AiConfigEditor(
                         androidx.compose.foundation.layout.FlowRow(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             unadded.take(5).forEach { modelId ->
                                 AssistChip(
-                                    onClick = { onSnapshotChange(snapshot.copy(defaultModel = modelId, defaultProvider = currentProvider.id)) },
+                                    onClick = {
+                                        modelInput = modelId
+                                        onSnapshotChange(snapshot.copy(defaultModel = modelId, defaultProvider = currentProvider.id))
+                                    },
                                     label = { Text(modelId, fontSize = 11.sp) }
                                 )
                             }
@@ -363,14 +382,17 @@ fun AiConfigEditor(
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
                         onClick = {
+                            // 先把输入缓冲写回，再测试
+                            val provider = currentProvider.copy(apiKey = apiKeyInput.trim(), baseUrl = baseUrlInput.trim())
+                            updateProvider(snapshot, parsed, provider, onSnapshotChange)
                             testingProvider = currentProvider.id
                             scope.launch {
-                                val result = withContext(Dispatchers.IO) { testProviderConnection(currentProvider) }
+                                val result = withContext(Dispatchers.IO) { testProviderConnection(provider) }
                                 testingProvider = null
-                                snackbarHost.showSnackbar(if (result.success) "✅ ${currentProvider.displayName} 连接成功" else "❌ ${result.message}")
+                                snackbarHost.showSnackbar(if (result.success) "✅ ${provider.displayName} 连接成功" else "❌ ${result.message}")
                             }
                         },
-                        enabled = testingProvider == null && currentProvider.apiKey.isNotBlank(),
+                        enabled = testingProvider == null && apiKeyInput.isNotBlank(),
                         modifier = Modifier.weight(1f)
                     ) {
                         if (testingProvider == currentProvider.id) { CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp) }
@@ -379,18 +401,20 @@ fun AiConfigEditor(
                     }
                     OutlinedButton(
                         onClick = {
+                            val provider = currentProvider.copy(apiKey = apiKeyInput.trim(), baseUrl = baseUrlInput.trim())
+                            updateProvider(snapshot, parsed, provider, onSnapshotChange)
                             testingProvider = "${currentProvider.id}_fetch"
                             scope.launch {
-                                val models = withContext(Dispatchers.IO) { fetchAvailableModels(currentProvider) }
+                                val models = withContext(Dispatchers.IO) { fetchAvailableModels(provider) }
                                 testingProvider = null
                                 if (models.isNotEmpty()) {
-                                    val updated = currentProvider.copy(models = models.map { ModelConfig(it, currentProvider.id, it) })
+                                    val updated = provider.copy(models = models.map { ModelConfig(it, provider.id, it) })
                                     updateProvider(snapshot, parsed, updated, onSnapshotChange)
                                     snackbarHost.showSnackbar("已拉取 ${models.size} 个模型")
                                 } else { snackbarHost.showSnackbar("拉取失败或未返回模型") }
                             }
                         },
-                        enabled = testingProvider == null && currentProvider.apiKey.isNotBlank(),
+                        enabled = testingProvider == null && apiKeyInput.isNotBlank(),
                         modifier = Modifier.weight(1f)
                     ) {
                         if (testingProvider == "${currentProvider.id}_fetch") { CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp) }
@@ -493,13 +517,19 @@ fun AiConfigEditor(
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("选择模型", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                 currentProvider.models.forEach { m ->
-                    Surface(modifier = Modifier.fillMaxWidth().clickable { onSnapshotChange(snapshot.copy(defaultModel = m.id, defaultProvider = currentProvider.id)); showModelPicker = false }) {
+                    Surface(modifier = Modifier.fillMaxWidth().clickable {
+                        modelInput = m.id
+                        onSnapshotChange(snapshot.copy(defaultModel = m.id, defaultProvider = currentProvider.id)); showModelPicker = false
+                    }) {
                         Text(m.name, modifier = Modifier.padding(12.dp), fontSize = 13.sp)
                     }
                 }
                 MODEL_SUGGESTIONS[currentProvider.id]?.forEach { id ->
                     if (currentProvider.models.none { it.id == id }) {
-                        Surface(modifier = Modifier.fillMaxWidth().clickable { onSnapshotChange(snapshot.copy(defaultModel = id, defaultProvider = currentProvider.id)); showModelPicker = false }) {
+                        Surface(modifier = Modifier.fillMaxWidth().clickable {
+                            modelInput = id
+                            onSnapshotChange(snapshot.copy(defaultModel = id, defaultProvider = currentProvider.id)); showModelPicker = false
+                        }) {
                             Text("$id (推荐)", modifier = Modifier.padding(12.dp), fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
                         }
                     }
