@@ -1,17 +1,9 @@
 package dev.idadroid.ui
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -20,39 +12,30 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.CloudUpload
-import androidx.compose.material.icons.rounded.Delete
-import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.NetworkCheck
 import androidx.compose.material.icons.rounded.Public
-import androidx.compose.material.icons.rounded.Visibility
-import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
-import androidx.compose.material3.ElevatedCard
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.InputChip
-import androidx.compose.material3.InputChipDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
@@ -60,6 +43,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -68,7 +52,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -94,12 +77,8 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 
 // ─── Provider catalog ──────────────────────────────────────────────────────────
-// Each preset carries a display name, brand color, default base URL, and the
-// env-var name that the Pi agent reads for the API key. Inspired by Operit's
-// ApiProviderConfigs — one tap pre-fills everything so the user only pastes a key.
 
 private data class ProviderPreset(
     val id: String,
@@ -129,7 +108,6 @@ private val PROVIDER_PRESETS = listOf(
     ProviderPreset("custom", "自定义", "", "CUSTOM_API_KEY", Color(0xFF6B7280), "手动填写 Base URL")
 )
 
-/** 每个 Provider 的常用模型建议列表，帮助用户快速添加而不用手打 ID。 */
 private val MODEL_SUGGESTIONS: Map<String, List<String>> = mapOf(
     "openai" to listOf("gpt-4o", "gpt-4o-mini", "o1", "o1-mini", "o3", "o3-mini", "gpt-4.1", "gpt-4.1-mini"),
     "anthropic" to listOf("claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"),
@@ -150,643 +128,25 @@ private val MODEL_SUGGESTIONS: Map<String, List<String>> = mapOf(
 
 private fun presetById(id: String): ProviderPreset? = PROVIDER_PRESETS.firstOrNull { it.id == id }
 
-/**
- * A human-friendly visual editor for the Pi agent's models.json / env config.
- *
- * Design principles (learned from Operit's ModelApiSettingsSection):
- *  - Providers shown as a clean list with brand-colored avatars and display names
- *  - One-tap presets via a dialog (not cramped buttons)
- *  - Simple form per provider: API Key (with show/hide) + Base URL + Model IDs
- *  - Technical details (envKey) auto-generated, hidden from the user
- *  - Raw JSON still available behind a toggle for power users
- */
-@Composable
-fun AiConfigEditor(
-    snapshot: PiConfigSnapshot,
-    onSnapshotChange: (PiConfigSnapshot) -> Unit
-) {
-    val parsed = remember(snapshot.modelsText, snapshot.envText) {
-        parseConfig(snapshot.modelsText, snapshot.envText)
-    }
-    var editingProvider by remember { mutableStateOf<String?>(null) }
-    var showAddDialog by remember { mutableStateOf(false) }
-    var showRawJson by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    val snackbarHost = remember { SnackbarHostState() }
-    var testingProviderId by remember { mutableStateOf<String?>(null) }
-    var showImportDialog by remember { mutableStateOf(false) }
-    var exportText by remember { mutableStateOf<String?>(null) }
+// ─── Data classes for JSON parsing ─────────────────────────────────────────────
 
-    // IMPORTANT: plain Column, NOT LazyColumn — this composable is embedded
-    // inside a LazyColumn item in PiSettingsTab. A nested LazyColumn crashes
-    // with "infinity maximum height constraints".
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        ConfigStatusBanner(parsed)
-
-        // ── Provider list ──
-        parsed.providers.forEach { provider ->
-            ProviderCard(
-                provider = provider,
-                isExpanded = editingProvider == provider.id,
-                onToggleExpand = { editingProvider = if (editingProvider == provider.id) null else provider.id },
-                onUpdate = { updated ->
-                    val newProviders = parsed.providers.map { if (it.id == provider.id) updated else it }
-                    val newJson = buildModelsJson(newProviders)
-                    onSnapshotChange(snapshot.copy(
-                        modelsText = newJson,
-                        envText = rebuildEnv(parsed.env, newProviders),
-                        modelCatalog = parseAgentModelCatalog(newJson)
-                    ))
-                },
-                onDelete = {
-                    val newProviders = parsed.providers.filter { it.id != provider.id }
-                    val newJson = buildModelsJson(newProviders)
-                    onSnapshotChange(snapshot.copy(
-                        modelsText = newJson,
-                        envText = removeEnvKeys(parsed.env, listOf(provider.envKey)),
-                        modelCatalog = parseAgentModelCatalog(newJson)
-                    ))
-                    if (editingProvider == provider.id) editingProvider = null
-                },
-                onTestConnection = {
-                    testingProviderId = provider.id
-                    scope.launch {
-                        val result = withContext(Dispatchers.IO) {
-                            testProviderConnection(provider)
-                        }
-                        testingProviderId = null
-                        if (result.success) {
-                            val modelInfo = if (result.availableModels.isNotEmpty()) {
-                                "，发现 ${result.availableModels.size} 个可用模型"
-                            } else ""
-                            snackbarHost.showSnackbar(
-                                "✅ ${provider.displayName} 连接成功$modelInfo"
-                            )
-                        } else {
-                            snackbarHost.showSnackbar(
-                                "❌ ${provider.displayName}: ${result.message}"
-                            )
-                        }
-                    }
-                },
-                onFetchModels = {
-                    testingProviderId = "${provider.id}_fetch"
-                    scope.launch {
-                        val models = withContext(Dispatchers.IO) {
-                            fetchAvailableModels(provider)
-                        }
-                        testingProviderId = null
-                        if (models.isNotEmpty()) {
-                            val existing = provider.models.map { it.id }.toSet()
-                            val newModels = models.filter { it !in existing }
-                            if (newModels.isNotEmpty()) {
-                                val updated = provider.copy(models = provider.models + newModels.map { ModelConfig(it, provider.id, it) })
-                                val newProviders = parsed.providers.map { if (it.id == provider.id) updated else it }
-                                val newJson = buildModelsJson(newProviders)
-                                onSnapshotChange(snapshot.copy(
-                                    modelsText = newJson,
-                                    envText = rebuildEnv(parsed.env, newProviders),
-                                    modelCatalog = parseAgentModelCatalog(newJson)
-                                ))
-                                snackbarHost.showSnackbar("已拉取 ${newModels.size} 个新模型")
-                            } else {
-                                snackbarHost.showSnackbar("没有新模型可添加（全部已存在）")
-                            }
-                        } else {
-                            snackbarHost.showSnackbar("拉取失败或 API 未返回模型列表")
-                        }
-                    }
-                },
-                isTesting = testingProviderId == provider.id || testingProviderId == "${provider.id}_fetch"
-            )
-        }
-
-        // ── Add provider + Config actions row ──
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(
-                onClick = { showAddDialog = true },
-                modifier = Modifier.weight(1f)
-            ) {
-                Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("添加 Provider")
-            }
-            OutlinedButton(
-                onClick = {
-                    exportText = exportConfig(snapshot)
-                }
-            ) {
-                Icon(Icons.Rounded.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("导出")
-            }
-            OutlinedButton(
-                onClick = { showImportDialog = true }
-            ) {
-                Icon(Icons.Rounded.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("导入")
-            }
-        }
-
-        // Snackbar host for test/fetch/import/export feedback
-        SnackbarHost(hostState = snackbarHost) { data ->
-            Snackbar(data)
-        }
-
-        // ── Advanced: raw JSON ──
-        OutlinedCard(Modifier.fillMaxWidth()) {
-            Row(
-                Modifier.fillMaxWidth().clickable { showRawJson = !showRawJson }.padding(14.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(if (showRawJson) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("高级：直接编辑 JSON", fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
-            }
-            AnimatedVisibility(showRawJson, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
-                Column(Modifier.padding(horizontal = 14.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedTextField(
-                        value = snapshot.modelsText,
-                        onValueChange = { newText -> onSnapshotChange(snapshot.copy(modelsText = newText, modelCatalog = parseAgentModelCatalog(newText))) },
-                        label = { Text("models.json") },
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 160.dp),
-                        textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
-                        maxLines = 20
-                    )
-                    OutlinedTextField(
-                        value = snapshot.envText,
-                        onValueChange = { newText -> onSnapshotChange(snapshot.copy(envText = newText)) },
-                        label = { Text("env (JSON)") },
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 100.dp),
-                        textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
-                        maxLines = 12
-                    )
-                }
-            }
-        }
-    }
-
-    if (showAddDialog) {
-        AddProviderDialog(
-            existingIds = parsed.providers.map { it.id },
-            onDismiss = { showAddDialog = false },
-            onPick = { preset ->
-                val newProvider = ProviderConfig(
-                    id = preset.id,
-                    displayName = preset.displayName,
-                    baseUrl = preset.baseUrl,
-                    envKey = preset.envKey,
-                    color = preset.color,
-                    apiKey = "",
-                    models = emptyList()
-                )
-                val newProviders = parsed.providers + newProvider
-                val newJson = buildModelsJson(newProviders)
-                onSnapshotChange(snapshot.copy(
-                    modelsText = newJson,
-                    envText = rebuildEnv(parsed.env, newProviders),
-                    modelCatalog = parseAgentModelCatalog(newJson)
-                ))
-                showAddDialog = false
-                editingProvider = preset.id
-            }
-        )
-    }
-
-    // ── Export dialog ──
-    exportText?.let { json ->
-        AlertDialog(
-            onDismissRequest = { exportText = null },
-            title = { Text("导出配置") },
-            text = {
-                Column {
-                    Text("复制以下 JSON 保存备份:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.height(8.dp))
-                    Surface(
-                        tonalElevation = 2.dp,
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp)
-                    ) {
-                        Text(
-                            json,
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace,
-                            modifier = Modifier.padding(8.dp).verticalScroll(rememberScrollState())
-                        )
-                    }
-                }
-            },
-            confirmButton = { TextButton(onClick = { exportText = null }) { Text("关闭") } }
-        )
-    }
-
-    // ── Import dialog ──
-    if (showImportDialog) {
-        var importText by remember { mutableStateOf("") }
-        AlertDialog(
-            onDismissRequest = { showImportDialog = false },
-            title = { Text("导入配置") },
-            text = {
-                Column {
-                    Text("粘贴之前导出的 JSON:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = importText,
-                        onValueChange = { importText = it },
-                        modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp),
-                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val imported = parseImportedConfig(importText.trim())
-                    if (imported != null) {
-                        onSnapshotChange(imported)
-                        scope.launch { snackbarHost.showSnackbar("配置导入成功") }
-                        showImportDialog = false
-                    } else {
-                        scope.launch { snackbarHost.showSnackbar("配置解析失败，格式不正确") }
-                    }
-                }) { Text("导入") }
-            },
-            dismissButton = { TextButton(onClick = { showImportDialog = false }) { Text("取消") } }
-        )
-    }
-}
-
-// ─── Status banner ─────────────────────────────────────────────────────────────
-
-@Composable
-private fun ConfigStatusBanner(parsed: ParsedConfig) {
-    val (message, isError) = when {
-        parsed.parseError != null -> "配置解析失败：${parsed.parseError}" to true
-        parsed.providers.isEmpty() -> "尚未配置 Provider，点击「添加 Provider」开始" to true
-        parsed.models.isEmpty() -> "已配置 ${parsed.providers.size} 个 Provider，但还没有模型" to true
-        else -> "已配置 ${parsed.providers.size} 个 Provider / ${parsed.models.size} 个模型" to false
-    }
-    Surface(
-        color = if (isError) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f) else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
-        shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Icon(
-                if (isError) Icons.Rounded.ErrorOutline else Icons.Rounded.CheckCircle,
-                contentDescription = null,
-                tint = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-            )
-            Text(message, modifier = Modifier.weight(1f), color = if (isError) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurface, fontSize = 13.sp)
-        }
-    }
-}
-
-// ─── Provider card ─────────────────────────────────────────────────────────────
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun ProviderCard(
-    provider: ProviderConfig,
-    isExpanded: Boolean,
-    onToggleExpand: () -> Unit,
-    onUpdate: (ProviderConfig) -> Unit,
-    onDelete: () -> Unit,
-    onTestConnection: () -> Unit = {},
-    onFetchModels: () -> Unit = {},
-    isTesting: Boolean = false
-) {
-    ElevatedCard(Modifier.fillMaxWidth()) {
-        // Header — always visible
-        Row(
-            Modifier.fillMaxWidth().clickable { onToggleExpand() }.padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Brand-colored avatar with first letter
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(provider.color),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    provider.displayName.take(1).uppercase(),
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(provider.displayName, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                Text(
-                    buildString {
-                        append(if (provider.models.isEmpty()) "暂无模型" else "${provider.models.size} 个模型")
-                        if (provider.apiKey.isNotBlank()) append(" · Key 已配置")
-                        else append(" · 未配置 Key")
-                    },
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Icon(if (isExpanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, contentDescription = null)
-        }
-
-        // Expanded form
-        AnimatedVisibility(isExpanded, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
-            HorizontalDivider()
-            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                // Base URL
-                OutlinedTextField(
-                    value = provider.baseUrl,
-                    onValueChange = { onUpdate(provider.copy(baseUrl = it)) },
-                    label = { Text("Base URL") },
-                    leadingIcon = { Icon(Icons.Rounded.Public, contentDescription = null) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                // 端点补全提示
-                if (provider.baseUrl.isNotBlank() && !provider.baseUrl.endsWith("#")) {
-                    val completed = EndpointCompleter.complete(provider.baseUrl, provider.id)
-                    if (completed != provider.baseUrl.trim().removeSuffix("/")) {
-                        Text(
-                            "→ 实际请求: $completed",
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
-                // API Key with show/hide
-                var showKey by remember { mutableStateOf(false) }
-                OutlinedTextField(
-                    value = provider.apiKey,
-                    onValueChange = { onUpdate(provider.copy(apiKey = it)) },
-                    label = { Text("API Key") },
-                    leadingIcon = { Icon(Icons.Rounded.Key, contentDescription = null) },
-                    trailingIcon = {
-                        IconButton(onClick = { showKey = !showKey }) {
-                            Icon(if (showKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility, contentDescription = if (showKey) "隐藏" else "显示")
-                        }
-                    },
-                    visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                // Models — chip-based editor (like Operit's tag UI): each model
-                // shows as a removable chip, with an inline add field at the end.
-                Text("模型列表", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (provider.models.isNotEmpty()) {
-                    androidx.compose.foundation.layout.FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        provider.models.forEach { model ->
-                            InputChip(
-                                selected = false,
-                                onClick = {},
-                                label = { Text(model.id, fontSize = 12.sp) },
-                                trailingIcon = {
-                                    Icon(
-                                        Icons.Rounded.Close,
-                                        contentDescription = "移除",
-                                        modifier = Modifier
-                                            .size(14.dp)
-                                            .clickable {
-                                                val newModels = provider.models.filterNot { it.id == model.id }
-                                                onUpdate(provider.copy(models = newModels))
-                                            }
-                                    )
-                                },
-                                colors = InputChipDefaults.inputChipColors(
-                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                    labelColor = MaterialTheme.colorScheme.onSecondaryContainer
-                                )
-                            )
-                        }
-                    }
-                }
-                var newModelText by remember(provider.id) { mutableStateOf("") }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedTextField(
-                        value = newModelText,
-                        onValueChange = { newModelText = it },
-                        label = { Text("添加模型 ID") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                        keyboardActions = KeyboardActions(onDone = {
-                            val id = newModelText.trim()
-                            if (id.isNotBlank() && provider.models.none { it.id == id }) {
-                                onUpdate(provider.copy(models = provider.models + ModelConfig(id, provider.id, id)))
-                                newModelText = ""
-                            }
-                        })
-                    )
-                    IconButton(onClick = {
-                        val id = newModelText.trim()
-                        if (id.isNotBlank() && provider.models.none { it.id == id }) {
-                            onUpdate(provider.copy(models = provider.models + ModelConfig(id, provider.id, id)))
-                            newModelText = ""
-                        }
-                    }) {
-                        Icon(Icons.Rounded.Add, contentDescription = "添加模型")
-                    }
-                }
-
-                // ── Smart model suggestions ──
-                MODEL_SUGGESTIONS[provider.id]?.let { suggestions ->
-                    val unadded = suggestions.filter { s -> provider.models.none { it.id == s } }
-                    if (unadded.isNotEmpty()) {
-                        Text("推荐模型（点击添加）", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        androidx.compose.foundation.layout.FlowRow(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            unadded.forEach { modelId ->
-                                AssistChip(
-                                    onClick = {
-                                        onUpdate(provider.copy(models = provider.models + ModelConfig(modelId, provider.id, modelId)))
-                                    },
-                                    label = { Text(modelId, fontSize = 11.sp) },
-                                    leadingIcon = { Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(14.dp)) }
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // ── API Key validation hint ──
-                if (provider.apiKey.isNotBlank() && provider.id != "custom") {
-                    val keyValid = validateApiKeyFormat(provider.id, provider.apiKey)
-                    if (!keyValid) {
-                        Text(
-                            "⚠️ API Key 格式可能不正确，请检查是否复制完整",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-                }
-
-                // ── Test & Fetch buttons ──
-                if (provider.apiKey.isNotBlank() && provider.baseUrl.isNotBlank()) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            onClick = onTestConnection,
-                            enabled = !isTesting,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            if (isTesting) {
-                                androidx.compose.material3.CircularProgressIndicator(
-                                    modifier = Modifier.size(16.dp),
-                                    strokeWidth = 2.dp
-                                )
-                            } else {
-                                Icon(Icons.Rounded.NetworkCheck, contentDescription = null, modifier = Modifier.size(16.dp))
-                            }
-                            Spacer(Modifier.width(6.dp))
-                            Text("测试连接", fontSize = 12.sp)
-                        }
-                        OutlinedButton(
-                            onClick = onFetchModels,
-                            enabled = !isTesting,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            if (isTesting) {
-                                androidx.compose.material3.CircularProgressIndicator(
-                                    modifier = Modifier.size(16.dp),
-                                    strokeWidth = 2.dp
-                                )
-                            } else {
-                                Icon(Icons.Rounded.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
-                            }
-                            Spacer(Modifier.width(6.dp))
-                            Text("拉取模型", fontSize = 12.sp)
-                        }
-                    }
-                }
-
-                // Delete
-                HorizontalDivider()
-                Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                    TextButton(
-                        onClick = onDelete,
-                        colors = androidx.compose.material3.ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                    ) {
-                        Icon(Icons.Rounded.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("删除")
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ─── Add provider dialog ───────────────────────────────────────────────────────
-
-@Composable
-private fun AddProviderDialog(
-    existingIds: List<String>,
-    onDismiss: () -> Unit,
-    onPick: (ProviderPreset) -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-        title = { Text("选择 Provider") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                PROVIDER_PRESETS.forEach { preset ->
-                    val alreadyAdded = preset.id != "custom" && existingIds.contains(preset.id)
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable(enabled = !alreadyAdded) { onPick(preset) },
-                        color = if (alreadyAdded) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface
-                    ) {
-                        Row(
-                            Modifier.fillMaxWidth().padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .clip(CircleShape)
-                                    .background(preset.color),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    preset.displayName.take(1).uppercase(),
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp
-                                )
-                            }
-                            Spacer(Modifier.width(12.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(preset.displayName, fontWeight = FontWeight.Medium)
-                                Text(preset.description, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            if (alreadyAdded) {
-                                Text("已添加", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    )
-}
-
-// ─── Data classes ──────────────────────────────────────────────────────────────
-
-private data class ModelConfig(
-    val id: String,
-    val provider: String,
-    val name: String
-)
-
+private data class ModelConfig(val id: String, val provider: String, val name: String)
 private data class ProviderConfig(
-    val id: String,
-    val displayName: String,
-    val baseUrl: String,
-    val envKey: String,
-    val color: Color,
-    val apiKey: String,
-    val models: List<ModelConfig>
+    val id: String, val displayName: String, val baseUrl: String,
+    val envKey: String, val color: Color, val apiKey: String, val models: List<ModelConfig>
 )
-
 private data class ParsedConfig(
-    val providers: List<ProviderConfig>,
-    val models: List<ModelConfig>,
-    val env: Map<String, String>,
-    val parseError: String?
+    val providers: List<ProviderConfig>, val models: List<ModelConfig>,
+    val env: Map<String, String>, val parseError: String?
 )
-
-// ─── Parsing (must match parseAgentModelCatalog format) ────────────────────────
-// Format: { "providers": { "openai": { "baseURL":"...", "envKey":"...", "models":[...] } } }
 
 private fun parseConfig(modelsText: String, envText: String): ParsedConfig {
     val json = Json { ignoreUnknownKeys = true; isLenient = true }
     return try {
         val modelsObj = if (modelsText.isBlank()) JsonObject(emptyMap()) else json.parseToJsonElement(modelsText).jsonObject
-        val envObj = if (envText.isBlank()) emptyMap() else json.parseToJsonElement(envText).let { it as? JsonObject }?.mapValues { it.value.jsonPrimitive.contentOrNull ?: "" } ?: emptyMap()
-
+        val envObj = if (envText.isBlank()) emptyMap() else json.parseToJsonElement(envText).let { (it as? JsonObject)?.mapValues { it.value.jsonPrimitive.contentOrNull ?: "" } ?: emptyMap() }
         val providersList = mutableListOf<ProviderConfig>()
         val modelsList = mutableListOf<ModelConfig>()
-
         val providersObj = modelsObj["providers"] as? JsonObject ?: JsonObject(emptyMap())
         providersObj.forEach { (providerId, element) ->
             val id = providerId.trim()
@@ -807,7 +167,6 @@ private fun parseConfig(modelsText: String, envText: String): ParsedConfig {
             providersList.add(ProviderConfig(id, displayName, baseUrl, envKey, color, apiKey, providerModels))
             modelsList.addAll(providerModels)
         }
-
         ParsedConfig(providersList, modelsList, envObj, null)
     } catch (e: Exception) {
         ParsedConfig(emptyList(), emptyList(), emptyMap(), e.message ?: "解析失败")
@@ -837,242 +196,401 @@ private fun buildModelsJson(providers: List<ProviderConfig>): String {
 }
 
 private fun rebuildEnv(env: Map<String, String>, providers: List<ProviderConfig>): String {
-    val json = Json { prettyPrint = true }
     val merged = env.toMutableMap()
-    providers.forEach { p ->
-        if (p.apiKey.isNotBlank()) merged[p.envKey] = p.apiKey
-        else merged.remove(p.envKey)
-    }
-    val obj = buildJsonObject {
-        merged.forEach { (k, v) -> put(k, JsonPrimitive(v)) }
-    }
-    return json.encodeToString(JsonObject.serializer(), obj)
+    providers.forEach { p -> if (p.apiKey.isNotBlank()) merged[p.envKey] = p.apiKey else merged.remove(p.envKey) }
+    val obj = buildJsonObject { merged.forEach { (k, v) -> put(k, JsonPrimitive(v)) } }
+    return Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), obj)
 }
 
 private fun removeEnvKeys(env: Map<String, String>, keys: List<String>): String {
-    val json = Json { prettyPrint = true }
     val filtered = env.filterKeys { it !in keys }
-    val obj = buildJsonObject {
-        filtered.forEach { (k, v) -> put(k, JsonPrimitive(v)) }
-    }
-    return json.encodeToString(JsonObject.serializer(), obj)
+    val obj = buildJsonObject { filtered.forEach { (k, v) -> put(k, JsonPrimitive(v)) } }
+    return Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), obj)
 }
 
-/**
- * 轻量级 API Key 格式校验，仅检查常见前缀和长度。
- * 不做网络请求，只给用户即时提示。
- */
 private fun validateApiKeyFormat(providerId: String, apiKey: String): Boolean {
     val key = apiKey.trim()
     if (key.length < 10) return false
     return when (providerId) {
         "openai" -> key.startsWith("sk-") && key.length >= 20
         "anthropic" -> key.startsWith("sk-ant-")
-        "deepseek" -> key.length >= 20
         "google" -> key.startsWith("AI") && key.length >= 20
         "openrouter" -> key.startsWith("sk-or-")
         "moonshot" -> key.startsWith("sk-")
-        "dashscope" -> key.length >= 20
-        "volcengine" -> key.length >= 20
-        "baidu" -> key.length >= 20
-        "hunyuan" -> key.length >= 20
-        "siliconflow" -> key.startsWith("sk-")
-        "mistral" -> key.length >= 20
         "groq" -> key.startsWith("gsk_")
         "xai" -> key.startsWith("xai-")
-        "together" -> key.length >= 20
-        else -> true // custom and unknown providers: skip validation
+        "siliconflow" -> key.startsWith("sk-")
+        else -> true
     }
 }
 
-// ─── Connection testing & model fetching ──────────────────────────────────────
+// ─── Main UI: Operit-style simple form ────────────────────────────────────────
+// Provider 下拉选择 → Base URL (自动填充) → API Key → Model Name
+// 四行搞定，不做一堆卡片
 
-// TestResult is reused from dev.idadroid.agent (AiConfigTools.kt)
-// to avoid a duplicate definition.
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AiConfigEditor(
+    snapshot: PiConfigSnapshot,
+    onSnapshotChange: (PiConfigSnapshot) -> Unit
+) {
+    val parsed = remember(snapshot.modelsText, snapshot.envText) { parseConfig(snapshot.modelsText, snapshot.envText) }
+    val scope = rememberCoroutineScope()
+    val snackbarHost = remember { SnackbarHostState() }
+    var showExportDialog by remember { mutableStateOf<String?>(null) }
+    var showImportDialog by remember { mutableStateOf(false) }
+    var showAdvanced by remember { mutableStateOf(false) }
+    var testingProvider by remember { mutableStateOf<String?>(null) }
+    var showModelPicker by remember { mutableStateOf(false) }
 
-/**
- * 测试 Provider 连接。
- * 策略:
- * - OpenAI 风格 (大多数 Provider): GET /v1/models — 200 即成功，附带模型列表
- * - Anthropic: POST /v1/messages 发一个最小请求 — 200 或 400(key问题) 判断连通性
- * - Google Gemini: GET /v1beta/models?key=KEY — 200 即成功
- * - 其他: 尝试 GET /models，失败则尝试 GET / 看是否可达
- */
+    // 当前选中的 provider (默认取第一个或 defaultProvider)
+    val currentProvider = remember(parsed.providers, snapshot.defaultProvider) {
+        parsed.providers.firstOrNull { it.id == snapshot.defaultProvider }
+            ?: parsed.providers.firstOrNull()
+            ?: PROVIDER_PRESETS.first()
+    }
+    val preset = presetById(currentProvider.id) ?: PROVIDER_PRESETS.last()
+
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        // ── 状态提示 ──
+        parsed.parseError?.let { err ->
+            Surface(color = MaterialTheme.colorScheme.errorContainer, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Text("配置解析失败：$err", color = MaterialTheme.colorScheme.onError, fontSize = 12.sp, modifier = Modifier.padding(12.dp))
+            }
+        }
+
+        // ── Provider 选择 ──
+        Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("AI 配置", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+
+                // Provider 下拉
+                var providerExpanded by remember { mutableStateOf(false) }
+                ExposedDropdownMenuBox(expanded = providerExpanded, onExpandedChange = { providerExpanded = it }) {
+                    OutlinedTextField(
+                        value = currentProvider.displayName,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Provider") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = providerExpanded) },
+                        modifier = Modifier.fillMaxWidth().menuAnchor()
+                    )
+                    ExposedDropdownMenu(expanded = providerExpanded, onDismissRequest = { providerExpanded = false }) {
+                        PROVIDER_PRESETS.forEach { p ->
+                            DropdownMenuItem(
+                                text = { Column { Text(p.displayName, fontWeight = FontWeight.Medium); Text(p.description, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } },
+                                onClick = {
+                                    providerExpanded = false
+                                    switchProvider(snapshot, parsed, p, onSnapshotChange)
+                                }
+                            )
+                        }
+                    }
+                }
+
+                // Base URL (自动填充，可编辑)
+                OutlinedTextField(
+                    value = currentProvider.baseUrl,
+                    onValueChange = { newUrl -> updateProvider(snapshot, parsed, currentProvider.copy(baseUrl = newUrl), onSnapshotChange) },
+                    label = { Text("Base URL") },
+                    leadingIcon = { Icon(Icons.Rounded.Public, contentDescription = null) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                // 端点补全提示
+                if (currentProvider.baseUrl.isNotBlank() && !currentProvider.baseUrl.endsWith("#")) {
+                    val completed = EndpointCompleter.complete(currentProvider.baseUrl, currentProvider.id)
+                    if (completed != currentProvider.baseUrl.trim().removeSuffix("/")) {
+                        Text("→ 实际请求: $completed", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+
+                // API Key
+                var showKey by remember { mutableStateOf(false) }
+                OutlinedTextField(
+                    value = currentProvider.apiKey,
+                    onValueChange = { newKey -> updateProvider(snapshot, parsed, currentProvider.copy(apiKey = newKey), onSnapshotChange) },
+                    label = { Text("API Key") },
+                    leadingIcon = { Icon(Icons.Rounded.Key, contentDescription = null) },
+                    trailingIcon = { IconButton(onClick = { showKey = !showKey }) { Icon(if (showKey) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, contentDescription = if (showKey) "隐藏" else "显示") } },
+                    visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                // Key 格式校验提示
+                if (currentProvider.apiKey.isNotBlank() && currentProvider.id != "custom") {
+                    if (!validateApiKeyFormat(currentProvider.id, currentProvider.apiKey)) {
+                        Text("⚠️ API Key 格式可能不正确", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+
+                // Model Name + 拉取按钮
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = snapshot.defaultModel,
+                        onValueChange = { onSnapshotChange(snapshot.copy(defaultModel = it, defaultProvider = currentProvider.id)) },
+                        label = { Text("Model") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = { showModelPicker = true }) {
+                        Icon(Icons.Rounded.ExpandMore, contentDescription = "选择模型")
+                    }
+                }
+
+                // 推荐模型 chips
+                MODEL_SUGGESTIONS[currentProvider.id]?.let { suggestions ->
+                    val unadded = suggestions
+                    if (unadded.isNotEmpty()) {
+                        androidx.compose.foundation.layout.FlowRow(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            unadded.take(5).forEach { modelId ->
+                                AssistChip(
+                                    onClick = { onSnapshotChange(snapshot.copy(defaultModel = modelId, defaultProvider = currentProvider.id)) },
+                                    label = { Text(modelId, fontSize = 11.sp) }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 操作按钮行
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            testingProvider = currentProvider.id
+                            scope.launch {
+                                val result = withContext(Dispatchers.IO) { testProviderConnection(currentProvider) }
+                                testingProvider = null
+                                snackbarHost.showSnackbar(if (result.success) "✅ ${currentProvider.displayName} 连接成功" else "❌ ${result.message}")
+                            }
+                        },
+                        enabled = testingProvider == null && currentProvider.apiKey.isNotBlank(),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        if (testingProvider == currentProvider.id) { CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp) }
+                        else { Icon(Icons.Rounded.NetworkCheck, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                        Spacer(Modifier.width(6.dp)); Text("测试", fontSize = 12.sp)
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            testingProvider = "${currentProvider.id}_fetch"
+                            scope.launch {
+                                val models = withContext(Dispatchers.IO) { fetchAvailableModels(currentProvider) }
+                                testingProvider = null
+                                if (models.isNotEmpty()) {
+                                    val updated = currentProvider.copy(models = models.map { ModelConfig(it, currentProvider.id, it) })
+                                    updateProvider(snapshot, parsed, updated, onSnapshotChange)
+                                    snackbarHost.showSnackbar("已拉取 ${models.size} 个模型")
+                                } else { snackbarHost.showSnackbar("拉取失败或未返回模型") }
+                            }
+                        },
+                        enabled = testingProvider == null && currentProvider.apiKey.isNotBlank(),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        if (testingProvider == "${currentProvider.id}_fetch") { CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp) }
+                        else { Icon(Icons.Rounded.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                        Spacer(Modifier.width(6.dp)); Text("拉取模型", fontSize = 12.sp)
+                    }
+                }
+
+                // 导入/导出
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { showExportDialog = exportConfig(snapshot) }, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Rounded.CloudUpload, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp)); Text("导出", fontSize = 12.sp)
+                    }
+                    OutlinedButton(onClick = { showImportDialog = true }, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Rounded.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp)); Text("导入", fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+
+        // ── 高级设置 (可折叠) ──
+        Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = Modifier.fillMaxWidth().clickable { showAdvanced = !showAdvanced }) {
+            Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(if (showAdvanced) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("高级设置", fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+            }
+        }
+        AnimatedVisibility(showAdvanced) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                // Thinking Level
+                Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Thinking", fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("off", "minimal", "low", "medium", "high", "xhigh").forEach { level ->
+                                val selected = snapshot.defaultThinkingLevel == level
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                    modifier = Modifier.clickable { onSnapshotChange(snapshot.copy(defaultThinkingLevel = level)) }
+                                ) {
+                                    Text(level, fontSize = 11.sp, color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+                // APPEND_SYSTEM.md
+                Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp)) {
+                        Text("APPEND_SYSTEM.md", fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = snapshot.appendSystem,
+                            onValueChange = { onSnapshotChange(snapshot.copy(appendSystem = it)) },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 100.dp),
+                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                        )
+                    }
+                }
+                // Extra args
+                Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp)) {
+                        Text("额外启动参数 (每行一个)", fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = snapshot.extraArgsText,
+                            onValueChange = { onSnapshotChange(snapshot.copy(extraArgsText = it)) },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 60.dp),
+                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                        )
+                    }
+                }
+                // Raw JSON
+                Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp)) {
+                        Text("models.json (原始 JSON)", fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = snapshot.modelsText,
+                            onValueChange = { onSnapshotChange(snapshot.copy(modelsText = it, modelCatalog = parseAgentModelCatalog(it))) },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp),
+                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                        )
+                    }
+                }
+            }
+        }
+
+        SnackbarHost(hostState = snackbarHost) { Snackbar(it) }
+    }
+
+    // ── Model picker bottom sheet ──
+    if (showModelPicker) {
+        val sheetState = rememberModalBottomSheetState()
+        ModalBottomSheet(onDismissRequest = { showModelPicker = false }, sheetState = sheetState) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("选择模型", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                currentProvider.models.forEach { m ->
+                    Surface(modifier = Modifier.fillMaxWidth().clickable { onSnapshotChange(snapshot.copy(defaultModel = m.id, defaultProvider = currentProvider.id)); showModelPicker = false }) {
+                        Text(m.name, modifier = Modifier.padding(12.dp), fontSize = 13.sp)
+                    }
+                }
+                MODEL_SUGGESTIONS[currentProvider.id]?.forEach { id ->
+                    if (currentProvider.models.none { it.id == id }) {
+                        Surface(modifier = Modifier.fillMaxWidth().clickable { onSnapshotChange(snapshot.copy(defaultModel = id, defaultProvider = currentProvider.id)); showModelPicker = false }) {
+                            Text("$id (推荐)", modifier = Modifier.padding(12.dp), fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(20.dp))
+            }
+        }
+    }
+
+    // ── Export dialog ──
+    showExportDialog?.let { json ->
+        AlertDialog(
+            onDismissRequest = { showExportDialog = null },
+            title = { Text("导出配置") },
+            text = {
+                Column {
+                    Text("复制以下 JSON 保存备份:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(8.dp))
+                    Surface(tonalElevation = 2.dp, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp)) {
+                        Text(json, fontSize = 10.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(8.dp))
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showExportDialog = null }) { Text("关闭") } }
+        )
+    }
+
+    // ── Import dialog ──
+    if (showImportDialog) {
+        var importText by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showImportDialog = false },
+            title = { Text("导入配置") },
+            text = {
+                Column {
+                    Text("粘贴之前导出的 JSON:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = importText, onValueChange = { importText = it },
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp),
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                    )
+                }
+            },
+            confirmButton = { TextButton(onClick = {
+                parseImportedConfig(importText.trim())?.let { onSnapshotChange(it); scope.launch { snackbarHost.showSnackbar("配置导入成功") }; showImportDialog = false }
+                ?: scope.launch { snackbarHost.showSnackbar("解析失败") }
+            }) { Text("导入") } },
+            dismissButton = { TextButton(onClick = { showImportDialog = false }) { Text("取消") } }
+        )
+    }
+}
+
+// ─── Helper: switch/update provider in config ──────────────────────────────────
+
+private fun switchProvider(snapshot: PiConfigSnapshot, parsed: ParsedConfig, preset: ProviderPreset, onSnapshotChange: (PiConfigSnapshot) -> Unit) {
+    val existing = parsed.providers.firstOrNull { it.id == preset.id }
+    if (existing != null) {
+        onSnapshotChange(snapshot.copy(defaultProvider = preset.id, defaultModel = existing.models.firstOrNull()?.id ?: ""))
+    } else {
+        // 新增 provider
+        val newProvider = ProviderConfig(preset.id, preset.displayName, preset.baseUrl, preset.envKey, preset.color, "", emptyList())
+        val newProviders = parsed.providers + newProvider
+        val newJson = buildModelsJson(newProviders)
+        onSnapshotChange(snapshot.copy(
+            modelsText = newJson, envText = rebuildEnv(parsed.env, newProviders),
+            defaultProvider = preset.id, defaultModel = "",
+            modelCatalog = parseAgentModelCatalog(newJson)
+        ))
+    }
+}
+
+private fun updateProvider(snapshot: PiConfigSnapshot, parsed: ParsedConfig, updated: ProviderConfig, onSnapshotChange: (PiConfigSnapshot) -> Unit) {
+    val newProviders = if (parsed.providers.any { it.id == updated.id }) parsed.providers.map { if (it.id == updated.id) updated else it } else listOf(updated)
+    val newJson = buildModelsJson(newProviders)
+    onSnapshotChange(snapshot.copy(
+        modelsText = newJson, envText = rebuildEnv(parsed.env, newProviders),
+        defaultProvider = updated.id, modelCatalog = parseAgentModelCatalog(newJson)
+    ))
+}
+
+// ─── Connection testing ────────────────────────────────────────────────────────
+
 private fun testProviderConnection(provider: ProviderConfig): TestResult {
     return try {
         when (provider.id) {
-            "anthropic" -> testAnthropicConnection(provider)
-            "google" -> testGeminiConnection(provider)
-            else -> testOpenAiStyleConnection(provider)
+            "anthropic" -> testAnthropic(provider)
+            "google" -> testGemini(provider)
+            else -> testOpenAiStyle(provider)
         }
-    } catch (e: java.net.UnknownHostException) {
-        TestResult(false, -1, "无法解析主机名: ${e.message}")
-    } catch (e: java.net.SocketTimeoutException) {
-        TestResult(false, -1, "连接超时")
-    } catch (e: javax.net.ssl.SSLException) {
-        TestResult(false, -1, "SSL 错误: ${e.message}")
-    } catch (e: Exception) {
-        TestResult(false, -1, e.message ?: "未知错误")
-    }
+    } catch (e: java.net.UnknownHostException) { TestResult(false, -1, "无法解析主机名: ${e.message}") }
+    catch (e: java.net.SocketTimeoutException) { TestResult(false, -1, "连接超时") }
+    catch (e: Exception) { TestResult(false, -1, e.message ?: "未知错误") }
 }
 
-/** OpenAI 风格: GET /models */
-private fun testOpenAiStyleConnection(provider: ProviderConfig): TestResult {
-    val baseUrl = EndpointCompleter.complete(provider.baseUrl, provider.id)
-    val modelsUrl = when {
-        baseUrl.contains("/chat/completions") -> baseUrl.removeSuffix("/chat/completions") + "/models"
-        baseUrl.contains("/v1/") -> baseUrl.substringBefore("/v1/") + "/v1/models"
-        baseUrl.endsWith("/v1") -> baseUrl + "/models"
-        else -> baseUrl.removeSuffix("/") + "/v1/models"
-    }
-
-    val conn = (java.net.URL(modelsUrl).openConnection() as java.net.HttpURLConnection).apply {
-        requestMethod = "GET"
-        connectTimeout = 10_000
-        readTimeout = 15_000
-        setRequestProperty("Authorization", "Bearer ${provider.apiKey}")
-        setRequestProperty("Content-Type", "application/json")
-    }
-
-    val code = conn.responseCode
-    val body = readBody(conn, code)
-
-    return if (code in 200..299) {
-        val models = parseModelsResponse(body)
-        TestResult(true, code, "连接成功", models)
-    } else {
-        TestResult(false, code, parseErrorMessage(body) ?: "HTTP $code")
-    }
-}
-
-/** Anthropic: POST /v1/messages 最小请求 */
-private fun testAnthropicConnection(provider: ProviderConfig): TestResult {
-    val baseUrl = provider.baseUrl.trim().removeSuffix("/")
-    val messagesUrl = if (baseUrl.endsWith("/v1")) "$baseUrl/messages" else "$baseUrl/v1/messages"
-
-    val minBody = """{"model":"claude-3-5-haiku-20241022","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"""
-    val conn = (java.net.URL(messagesUrl).openConnection() as java.net.HttpURLConnection).apply {
-        requestMethod = "POST"
-        connectTimeout = 10_000
-        readTimeout = 15_000
-        doOutput = true
-        setRequestProperty("x-api-key", provider.apiKey)
-        setRequestProperty("anthropic-version", "2023-06-01")
-        setRequestProperty("Content-Type", "application/json")
-    }
-    conn.outputStream.use { it.write(minBody.toByteArray()) }
-
-    val code = conn.responseCode
-    val body = readBody(conn, code)
-
-    return if (code in 200..299) {
-        // 连接成功，尝试拉取模型列表（Anthropic 有 /v1/models 端点）
-        val models = try { fetchAnthropicModelsDirect(provider) } catch (_: Exception) { emptyList() }
-        TestResult(true, code, "连接成功", models)
-    } else if (code == 401 || code == 403) {
-        TestResult(false, code, "API Key 无效或权限不足 (HTTP $code)")
-    } else if (code == 400) {
-        // 400 可能是 model 不存在但 Key 有效
-        TestResult(true, code, "连接成功（Key 有效，模型可能需要更新）")
-    } else {
-        TestResult(false, code, parseErrorMessage(body) ?: "HTTP $code")
-    }
-}
-
-/** Google Gemini: GET /v1beta/models?key=KEY */
-private fun testGeminiConnection(provider: ProviderConfig): TestResult {
-    val baseUrl = provider.baseUrl.trim().removeSuffix("/")
-    // Gemini 的 models 列表端点: GET /v1beta/models?key=API_KEY
-    val modelsUrl = if (baseUrl.contains("/v1beta")) {
-        "$baseUrl/models?key=${provider.apiKey}"
-    } else {
-        "$baseUrl/v1beta/models?key=${provider.apiKey}"
-    }
-
-    val conn = (java.net.URL(modelsUrl).openConnection() as java.net.HttpURLConnection).apply {
-        requestMethod = "GET"
-        connectTimeout = 10_000
-        readTimeout = 15_000
-        setRequestProperty("Content-Type", "application/json")
-    }
-
-    val code = conn.responseCode
-    val body = readBody(conn, code)
-
-    return if (code in 200..299) {
-        // Gemini 返回 { "models": [{ "name": "models/gemini-1.5-flash", ... }] }
-        val models = parseGeminiModelsResponse(body)
-        TestResult(true, code, "连接成功", models)
-    } else {
-        TestResult(false, code, parseErrorMessage(body) ?: "HTTP $code")
-    }
-}
-
-private fun readBody(conn: java.net.HttpURLConnection, code: Int): String {
-    return if (code in 200..299) {
-        conn.inputStream?.bufferedReader()?.use { it.readText() } ?: ""
-    } else {
-        conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
-    }
-}
-
-private fun parseModelsResponse(body: String): List<String> {
-    return try {
-        val parsed = kotlinx.serialization.json.Json.parseToJsonElement(body)
-        val obj = parsed as? kotlinx.serialization.json.JsonObject ?: return emptyList()
-        val data = obj["data"] as? kotlinx.serialization.json.JsonArray ?: return emptyList()
-        data.mapNotNull { item ->
-            (item as? kotlinx.serialization.json.JsonObject)?.let {
-                (it["id"] as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
-            }
-        }.filter { it.isNotBlank() }
-    } catch (_: Exception) {
-        emptyList()
-    }
-}
-
-/** Gemini 返回格式: { "models": [{ "name": "models/gemini-1.5-flash" }] } */
-private fun parseGeminiModelsResponse(body: String): List<String> {
-    return try {
-        val parsed = kotlinx.serialization.json.Json.parseToJsonElement(body)
-        val obj = parsed as? kotlinx.serialization.json.JsonObject ?: return emptyList()
-        val models = obj["models"] as? kotlinx.serialization.json.JsonArray ?: return emptyList()
-        models.mapNotNull { item ->
-            (item as? kotlinx.serialization.json.JsonObject)?.let {
-                (it["name"] as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
-                    ?.removePrefix("models/")
-            }
-        }.filter { it.isNotBlank() }
-    } catch (_: Exception) {
-        emptyList()
-    }
-}
-
-private fun parseErrorMessage(body: String): String? = try {
-    val parsed = kotlinx.serialization.json.Json.parseToJsonElement(body) as? kotlinx.serialization.json.JsonObject
-    parsed?.get("error")?.let { (it as? kotlinx.serialization.json.JsonObject)?.get("message")?.let { m -> (m as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull } }
-        ?: parsed?.get("message")?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull }
-} catch (_: Exception) { null }
-
-/**
- * 直接从 API 拉取模型列表（不做连接测试）。
- * - OpenAI 风格: GET /v1/models
- * - Anthropic: GET /v1/models (需要 x-api-key header)
- * - Gemini: GET /v1beta/models?key=KEY
- */
-private fun fetchAvailableModels(provider: ProviderConfig): List<String> {
-    return try {
-        when (provider.id) {
-            "google" -> fetchGeminiModels(provider)
-            "anthropic" -> fetchAnthropicModelsDirect(provider)
-            else -> fetchOpenAiStyleModels(provider)
-        }
-    } catch (_: Exception) {
-        emptyList()
-    }
-}
-
-private fun fetchOpenAiStyleModels(provider: ProviderConfig): List<String> {
+private fun testOpenAiStyle(provider: ProviderConfig): TestResult {
     val base = provider.baseUrl.trim().removeSuffix("/")
     val modelsUrl = when {
         base.contains("/chat/completions") -> base.removeSuffix("/chat/completions") + "/models"
@@ -1081,88 +599,115 @@ private fun fetchOpenAiStyleModels(provider: ProviderConfig): List<String> {
         else -> base + "/v1/models"
     }
     val conn = (java.net.URL(modelsUrl).openConnection() as java.net.HttpURLConnection).apply {
-        requestMethod = "GET"
-        connectTimeout = 10_000
-        readTimeout = 15_000
+        requestMethod = "GET"; connectTimeout = 10_000; readTimeout = 15_000
         setRequestProperty("Authorization", "Bearer ${provider.apiKey}")
     }
-    if (conn.responseCode !in 200..299) return emptyList()
-    val body = conn.inputStream.bufferedReader().use { it.readText() }
-    conn.disconnect()
-    parseModelsResponse(body)
+    val code = conn.responseCode; val body = readBody(conn, code)
+    return if (code in 200..299) TestResult(true, code, "连接成功", parseModels(body))
+    else TestResult(false, code, parseError(body) ?: "HTTP $code")
 }
 
-private fun fetchAnthropicModelsDirect(provider: ProviderConfig): List<String> {
-    val base = provider.baseUrl.trim().removeSuffix("/").removeSuffix("/v1")
-    val modelsUrl = "$base/v1/models"
-    val conn = (java.net.URL(modelsUrl).openConnection() as java.net.HttpURLConnection).apply {
-        requestMethod = "GET"
-        connectTimeout = 10_000
-        readTimeout = 15_000
-        setRequestProperty("x-api-key", provider.apiKey)
-        setRequestProperty("anthropic-version", "2023-06-01")
-    }
-    if (conn.responseCode !in 200..299) return emptyList()
-    val body = conn.inputStream.bufferedReader().use { it.readText() }
-    conn.disconnect()
-    // Anthropic uses the same { "data": [{ "id": "..." }] } format as OpenAI
-    parseModelsResponse(body)
-}
-
-private fun fetchGeminiModels(provider: ProviderConfig): List<String> {
+private fun testAnthropic(provider: ProviderConfig): TestResult {
     val base = provider.baseUrl.trim().removeSuffix("/")
-    val modelsUrl = if (base.contains("/v1beta")) {
-        "$base/models?key=${provider.apiKey}"
-    } else {
-        "$base/v1beta/models?key=${provider.apiKey}"
+    val url = if (base.endsWith("/v1")) "$base/messages" else "$base/v1/messages"
+    val body = """{"model":"claude-3-5-haiku-20241022","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"""
+    val conn = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
+        requestMethod = "POST"; connectTimeout = 10_000; readTimeout = 15_000; doOutput = true
+        setRequestProperty("x-api-key", provider.apiKey); setRequestProperty("anthropic-version", "2023-06-01")
+        setRequestProperty("Content-Type", "application/json")
     }
-    val conn = (java.net.URL(modelsUrl).openConnection() as java.net.HttpURLConnection).apply {
-        requestMethod = "GET"
-        connectTimeout = 10_000
-        readTimeout = 15_000
+    conn.outputStream.use { it.write(body.toByteArray()) }
+    val code = conn.responseCode; val resp = readBody(conn, code)
+    return when {
+        code in 200..299 -> TestResult(true, code, "连接成功")
+        code == 400 -> TestResult(true, code, "连接成功（Key 有效，模型可能需要更新）")
+        code == 401 || code == 403 -> TestResult(false, code, "API Key 无效")
+        else -> TestResult(false, code, parseError(resp) ?: "HTTP $code")
     }
-    if (conn.responseCode !in 200..299) return emptyList()
-    val body = conn.inputStream.bufferedReader().use { it.readText() }
-    conn.disconnect()
-    parseGeminiModelsResponse(body)
 }
 
-// ─── Config export / import ───────────────────────────────────────────────────
+private fun testGemini(provider: ProviderConfig): TestResult {
+    val base = provider.baseUrl.trim().removeSuffix("/")
+    val url = if (base.contains("/v1beta")) "$base/models?key=${provider.apiKey}" else "$base/v1beta/models?key=${provider.apiKey}"
+    val conn = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply { requestMethod = "GET"; connectTimeout = 10_000; readTimeout = 15_000 }
+    val code = conn.responseCode; val body = readBody(conn, code)
+    return if (code in 200..299) TestResult(true, code, "连接成功", parseGeminiModels(body))
+    else TestResult(false, code, parseError(body) ?: "HTTP $code")
+}
+
+private fun readBody(conn: java.net.HttpURLConnection, code: Int): String =
+    if (code in 200..299) conn.inputStream?.bufferedReader()?.use { it.readText() } ?: ""
+    else conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+
+private fun parseModels(body: String): List<String> = try {
+    val obj = Json.parseToJsonElement(body) as? JsonObject ?: return emptyList()
+    (obj["data"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull }?.filter { it.isNotBlank() } ?: emptyList()
+} catch (_: Exception) { emptyList() }
+
+private fun parseGeminiModels(body: String): List<String> = try {
+    val obj = Json.parseToJsonElement(body) as? JsonObject ?: return emptyList()
+    (obj["models"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.get("name")?.jsonPrimitive?.contentOrNull?.removePrefix("models/") }?.filter { it.isNotBlank() } ?: emptyList()
+} catch (_: Exception) { emptyList() }
+
+private fun parseError(body: String): String? = try {
+    val obj = Json.parseToJsonElement(body) as? JsonObject
+    obj?.get("error")?.let { (it as? JsonObject)?.get("message")?.jsonPrimitive?.contentOrNull } ?: obj?.get("message")?.jsonPrimitive?.contentOrNull
+} catch (_: Exception) { null }
+
+// ─── Model fetching ────────────────────────────────────────────────────────────
+
+private fun fetchAvailableModels(provider: ProviderConfig): List<String> = try {
+    when (provider.id) {
+        "google" -> fetchGemini(provider)
+        "anthropic" -> fetchAnthropic(provider)
+        else -> fetchOpenAi(provider)
+    }
+} catch (_: Exception) { emptyList() }
+
+private fun fetchOpenAi(provider: ProviderConfig): List<String> {
+    val base = provider.baseUrl.trim().removeSuffix("/")
+    val url = when { base.contains("/chat/completions") -> base.removeSuffix("/chat/completions") + "/models"; base.endsWith("/v1") -> base + "/models"; base.contains("/v1/") -> base.substringBefore("/v1/") + "/v1/models"; else -> base + "/v1/models" }
+    val conn = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply { requestMethod = "GET"; connectTimeout = 10_000; readTimeout = 15_000; setRequestProperty("Authorization", "Bearer ${provider.apiKey}") }
+    if (conn.responseCode !in 200..299) return emptyList()
+    val body = conn.inputStream.bufferedReader().use { it.readText() }; conn.disconnect(); return parseModels(body)
+}
+
+private fun fetchAnthropic(provider: ProviderConfig): List<String> {
+    val base = provider.baseUrl.trim().removeSuffix("/").removeSuffix("/v1")
+    val conn = (java.net.URL("$base/v1/models").openConnection() as java.net.HttpURLConnection).apply { requestMethod = "GET"; connectTimeout = 10_000; readTimeout = 15_000; setRequestProperty("x-api-key", provider.apiKey); setRequestProperty("anthropic-version", "2023-06-01") }
+    if (conn.responseCode !in 200..299) return emptyList()
+    val body = conn.inputStream.bufferedReader().use { it.readText() }; conn.disconnect(); return parseModels(body)
+}
+
+private fun fetchGemini(provider: ProviderConfig): List<String> {
+    val base = provider.baseUrl.trim().removeSuffix("/")
+    val url = if (base.contains("/v1beta")) "$base/models?key=${provider.apiKey}" else "$base/v1beta/models?key=${provider.apiKey}"
+    val conn = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply { requestMethod = "GET"; connectTimeout = 10_000; readTimeout = 15_000 }
+    if (conn.responseCode !in 200..299) return emptyList()
+    val body = conn.inputStream.bufferedReader().use { it.readText() }; conn.disconnect(); return parseGeminiModels(body)
+}
+
+// ─── Config export / import ────────────────────────────────────────────────────
 
 private fun exportConfig(snapshot: PiConfigSnapshot): String {
     val export = ConfigExport(
-        defaultProvider = snapshot.defaultProvider,
-        defaultModel = snapshot.defaultModel,
-        defaultThinkingLevel = snapshot.defaultThinkingLevel,
-        enabledModels = snapshot.enabledModels,
-        settingsText = snapshot.settingsText,
-        modelsText = snapshot.modelsText,
-        envText = snapshot.envText,
-        appendSystem = snapshot.appendSystem,
-        extraArgsText = snapshot.extraArgsText,
+        defaultProvider = snapshot.defaultProvider, defaultModel = snapshot.defaultModel,
+        defaultThinkingLevel = snapshot.defaultThinkingLevel, enabledModels = snapshot.enabledModels,
+        settingsText = snapshot.settingsText, modelsText = snapshot.modelsText, envText = snapshot.envText,
+        appendSystem = snapshot.appendSystem, extraArgsText = snapshot.extraArgsText,
         exportedAt = System.currentTimeMillis()
     )
-    return kotlinx.serialization.json.Json { prettyPrint = true; encodeDefaults = true }
-        .encodeToString(ConfigExport.serializer(), export)
+    return Json { prettyPrint = true; encodeDefaults = true }.encodeToString(ConfigExport.serializer(), export)
 }
 
-private fun parseImportedConfig(json: String): PiConfigSnapshot? {
-    return try {
-        val export = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
-            .decodeFromString(ConfigExport.serializer(), json)
-        PiConfigSnapshot(
-            defaultProvider = export.defaultProvider,
-            defaultModel = export.defaultModel,
-            defaultThinkingLevel = export.defaultThinkingLevel.ifBlank { "medium" },
-            enabledModels = export.enabledModels,
-            settingsText = export.settingsText.ifBlank { "{}" },
-            modelsText = export.modelsText.ifBlank { "{}" },
-            envText = export.envText.ifBlank { "{}" },
-            appendSystem = export.appendSystem,
-            extraArgsText = export.extraArgsText,
-            modelCatalog = parseAgentModelCatalog(export.modelsText.ifBlank { "{}" })
-        )
-    } catch (_: Exception) {
-        null
-    }
-}
+private fun parseImportedConfig(json: String): PiConfigSnapshot? = try {
+    val export = Json { ignoreUnknownKeys = true }.decodeFromString(ConfigExport.serializer(), json)
+    PiConfigSnapshot(
+        defaultProvider = export.defaultProvider, defaultModel = export.defaultModel,
+        defaultThinkingLevel = export.defaultThinkingLevel.ifBlank { "medium" },
+        enabledModels = export.enabledModels, settingsText = export.settingsText.ifBlank { "{}" },
+        modelsText = export.modelsText.ifBlank { "{}" }, envText = export.envText.ifBlank { "{}" },
+        appendSystem = export.appendSystem, extraArgsText = export.extraArgsText,
+        modelCatalog = parseAgentModelCatalog(export.modelsText.ifBlank { "{}" })
+    )
+} catch (_: Exception) { null }

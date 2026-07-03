@@ -867,17 +867,21 @@ class PiAgentManager(
         pendingTextDelta.setLength(0)
         pendingThinkingDelta.setLength(0)
         _state.update { old ->
-            val list = old.messages.toMutableList()
-            val last = list.lastOrNull()
+            val messages = old.messages
+            val last = messages.lastOrNull()
             if (last?.role == "assistant") {
-                list[list.lastIndex] = last.copy(
+                // 只更新最后一条消息，避免全列表拷贝
+                val updatedLast = last.copy(
                     text = last.text + textDelta,
                     thinking = if (thinkingDelta.isNotEmpty()) (last.thinking ?: "") + thinkingDelta else last.thinking
                 )
+                // toMutableList + lastIndex 赋值比 + 新列表更高效
+                val list = messages.toMutableList()
+                list[list.lastIndex] = updatedLast
+                old.copy(messages = list)
             } else {
-                list += ChatMessage(newMessageId(), "assistant", textDelta, System.currentTimeMillis(), thinking = thinkingDelta.takeIf { it.isNotEmpty() })
+                old.copy(messages = messages + ChatMessage(newMessageId(), "assistant", textDelta, System.currentTimeMillis(), thinking = thinkingDelta.takeIf { it.isNotEmpty() }))
             }
-            old.copy(messages = list)
         }
     }
 
