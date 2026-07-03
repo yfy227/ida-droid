@@ -137,7 +137,7 @@ fun defaultSystemAppendPrompt(): String = """
 - ida-mcp 入口: /root/ida-pro-9.3/ida-mcp
 - ida-mcp 使用文档: /root/ida-pro-9.3/IDA_MCP_MCPC_USAGE.md
 - Android 附件: /root/pi_workspace/.upload
-- 主机传输文件: /root/pi_workspace/.transfer
+- MCP 文件传输: /root/.mcp-transfer (独立于工作区，专门给 MCP 快速打开文件)
 - pi 会话: /root/pi_workspace/.pi-sessions
 
 ## 工作准则
@@ -162,10 +162,12 @@ fun defaultSystemAppendPrompt(): String = """
 - jadx、python、npm 均已安装
 
 ### 文件传输桥 (idadroid-file)
+MCP 传输目录独立于工作区，专门用于快速把外部文件传进容器供 MCP/IDA 打开。
 别名: `alias idadroid-file='/root/pi_workspace/.idadroid/scripts/idadroid-file.sh'`
-- `idadroid-file list` — 列出主机传输文件
+- `idadroid-file list` — 列出所有已上传文件
 - `idadroid-file find <name>` — 查找文件路径（模糊匹配）
-- `idadroid-file open <name>` — 在 IDA 中打开传输文件
+- `idadroid-file open <name>` — 打开文件（先查上传列表，无匹配则推荐最近上传）
+- `idadroid-file latest` — 查看最近上传的文件
 - `idadroid-file path <name>` — find 的别名
 
 ### 安全约束

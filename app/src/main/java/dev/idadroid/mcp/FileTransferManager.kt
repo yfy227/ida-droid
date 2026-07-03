@@ -14,11 +14,17 @@ import kotlinx.serialization.json.Json
 /**
  * Manages file transfers from the Android host into the proot container.
  *
- * Files are copied to `/root/pi_workspace/.transfer/` inside the container
- * (mapped to `rootfsDir/root/pi_workspace/.transfer/` on the host). A JSON
- * manifest at `.transfer/manifest.json` records every transfer so that the
- * agent (running inside the container) can discover and open transferred
- * files without needing to know Android paths.
+ * Files are copied to `/root/.mcp-transfer/` inside the container
+ * (mapped to `rootfsDir/root/.mcp-transfer/` on the host). This is
+ * **independent of the agent workspace** (`/root/pi_workspace`) so that
+ * transferred files don't clutter the workspace and can be referenced
+ * separately by MCP tools.
+ *
+ * A JSON manifest at `.mcp-transfer/manifest.json` records every transfer.
+ * The HTTP server exposes this manifest so the agent can discover files.
+ * When the agent calls `idadroid-file open <name>`, the script first checks
+ * this manifest; if a recent transfer matches, it returns the path and
+ * asks the agent whether to use it.
  */
 class FileTransferManager(
     context: Context,
@@ -27,12 +33,12 @@ class FileTransferManager(
     private val appContext = context.applicationContext
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
 
-    /** Host-side directory that maps to `/root/pi_workspace/.transfer` in the container. */
-    private val transferHostDir: File get() = File(paths.rootfsDir, "root/pi_workspace/.transfer")
+    /** Host-side directory that maps to `/root/.mcp-transfer` in the container. */
+    private val transferHostDir: File get() = File(paths.rootfsDir, "root/.mcp-transfer")
     private val manifestFile: File get() = File(transferHostDir, "manifest.json")
 
     /** Proot-visible path for the transfer directory. */
-    val transferProotDir: String get() = "/root/pi_workspace/.transfer"
+    val transferProotDir: String get() = "/root/.mcp-transfer"
 
     private val mutex = Mutex()
 
@@ -69,6 +75,15 @@ class FileTransferManager(
 
     /** Returns all transfer entries, newest first. */
     fun listTransfers(): List<TransferEntry> = loadManifest().entries.sortedByDescending { it.transferredAt }
+
+    /** Returns the most recently transferred file, or null if none. */
+    fun latestTransfer(): TransferEntry? = listTransfers().firstOrNull()
+
+    /** Returns recent transfers within the given time window (ms), newest first. */
+    fun recentTransfers(withinMs: Long = 300_000): List<TransferEntry> {
+        val cutoff = System.currentTimeMillis() - withinMs
+        return listTransfers().filter { it.transferredAt >= cutoff }
+    }
 
     /** Finds a transfer entry whose name (case-insensitive) or id matches [query]. */
     fun findTransfer(query: String): TransferEntry? {

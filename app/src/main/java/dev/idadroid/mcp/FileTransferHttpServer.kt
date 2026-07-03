@@ -150,6 +150,23 @@ class FileTransferHttpServer(
                 }
             }
 
+            // 最近上传的文件（默认5分钟内），供 agent 检查是否有可推荐的上传文件
+            path == "/api/transfers/latest" && method == "GET" -> {
+                val latest = manager.latestTransfer()
+                if (latest != null) {
+                    respondJson(output, 200, entryJson(latest))
+                } else {
+                    respondJson(output, 404, "{\"error\":\"no transfers\"}")
+                }
+            }
+
+            path == "/api/transfers/recent" && method == "GET" -> {
+                val withinMs = query["within_ms"]?.toLongOrNull() ?: 300_000
+                val recent = manager.recentTransfers(withinMs)
+                val entriesJson = recent.joinToString(",") { entryJson(it) }
+                respondJson(output, 200, "{\"transfers\":[$entriesJson]}")
+            }
+
             path == "/api/transfer" && method == "POST" -> {
                 val hostPath = query["path"]
                 if (hostPath.isNullOrBlank()) {
