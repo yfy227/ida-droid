@@ -32,6 +32,11 @@ class PiAgentManager(
     private val paths: EnvironmentPaths = EnvironmentPaths.of(context)
 ) {
     private val appContext = context.applicationContext
+    private val settings = dev.idadroid.settings.IdaDroidSettings(appContext)
+    /** 用户设置的工作区路径 (proot 内可见路径)，默认 /root/pi_workspace */
+    private val workspaceProotPath: String get() = settings.envSettings.workspacePath.ifBlank { dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH }
+    /** 工作区在主机文件系统上的根目录 */
+    private val workspaceHostRoot: File get() = File(paths.rootfsDir, workspaceProotPath.removePrefix("/").removePrefix("root/"))
     private val repo = AgentSessionRepository(paths)
     private val configManager = PiConfigManager(paths)
     val aiConfigTools = AiConfigTools(paths, configManager)
@@ -571,9 +576,9 @@ class PiAgentManager(
     }
 
     fun workspaceAbsPath(path: String): String = when {
-        path.startsWith("/root/pi_workspace") -> path
-        path == "." || path.isBlank() -> "/root/pi_workspace"
-        else -> "/root/pi_workspace/${path.trimStart('/')}"
+        path.startsWith(workspaceProotPath) -> path
+        path == "." || path.isBlank() -> workspaceProotPath
+        else -> "$workspaceProotPath/${path.trimStart('/')}"
     }
 
     fun fileRef(path: String): String = attachmentManager.fileRef(path)
@@ -919,12 +924,12 @@ class PiAgentManager(
         val normalized = normalizeWorkspacePath(path)
         val rel = when {
             normalized == "." -> ""
-            normalized.startsWith("/root/pi_workspace/") -> normalized.removePrefix("/root/pi_workspace/")
-            normalized == "/root/pi_workspace" -> ""
-            normalized.startsWith("/") -> error("路径必须位于 /root/pi_workspace：$path")
+            normalized.startsWith("$workspaceProotPath/") -> normalized.removePrefix("$workspaceProotPath/")
+            normalized == workspaceProotPath -> ""
+            normalized.startsWith("/") -> error("路径必须位于 $workspaceProotPath：$path")
             else -> normalized
         }
-        val root = File(paths.rootfsDir, "root/pi_workspace").canonicalFile
+        val root = workspaceHostRoot.canonicalFile
         val file = if (rel.isBlank()) root else File(root, rel).canonicalFile
         require(file.path == root.path || file.path.startsWith(root.path + File.separator)) { "路径越界：$path" }
         return file
@@ -932,7 +937,8 @@ class PiAgentManager(
 
     private fun normalizeWorkspacePath(path: String): String {
         val trimmed = path.trim().ifBlank { "." }.replace('\\', '/')
-        val prefix = if (trimmed.startsWith("/root/pi_workspace")) "/root/pi_workspace" else ""
+        val wsPath = workspaceProotPath
+        val prefix = if (trimmed.startsWith(wsPath)) wsPath else ""
         val body = if (prefix.isNotBlank()) trimmed.removePrefix(prefix).trimStart('/') else trimmed
         val parts = mutableListOf<String>()
         body.split('/').forEach { part ->
@@ -947,7 +953,7 @@ class PiAgentManager(
     }
 
     private fun workspaceRelPath(file: File): String {
-        val root = File(paths.rootfsDir, "root/pi_workspace").canonicalFile
+        val root = workspaceHostRoot.canonicalFile
         val canonical = file.canonicalFile
         return canonical.relativeTo(root).path.replace('\\', '/').ifBlank { "." }
     }
