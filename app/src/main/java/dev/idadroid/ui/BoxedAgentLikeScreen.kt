@@ -151,6 +151,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -723,24 +724,57 @@ private fun WorkspaceSidePane(
                 }
 
                 if (!ws.hasWorkspace) {
-                    Text(
-                        "选择一个文件夹作为工作区后，Agent 生成的代码文件可以保存到这里，你也可以将工作区文件传输给 Agent 使用。",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        lineHeight = 18.sp
-                    )
-                }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = { pickFolder.launch(null) },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Rounded.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(if (ws.hasWorkspace) "更换工作区" else "选择工作区文件夹")
+                    // 参考 Operit 的工作区引导：两个卡片选项
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                        // 创建默认
+                        Surface(
+                            modifier = Modifier.weight(1f).clickable {
+                                // 在应用私有目录创建默认工作区
+                                val defaultDir = java.io.File(context.filesDir, "workspace")
+                                if (!defaultDir.exists()) defaultDir.mkdirs()
+                                // 转 URI 给 SAF
+                                val uri = androidx.core.content.FileProvider.getUriForFile(
+                                    context, "${context.packageName}.rootfs-file-provider", defaultDir
+                                )
+                                runCatching {
+                                    context.contentResolver.takePersistableUriPermission(
+                                        uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                                    )
+                                }
+                                manager.setWorkspace(uri)
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest
+                        ) {
+                            Column(Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Icon(Icons.Rounded.CreateNewFolder, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(28.dp))
+                                Text("创建默认", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                                Text("应用内创建", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        // 选择现有
+                        Surface(
+                            modifier = Modifier.weight(1f).clickable { pickFolder.launch(null) },
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest
+                        ) {
+                            Column(Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Icon(Icons.Rounded.FolderOpen, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(28.dp))
+                                Text("选择现有", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                                Text("从设备中选择", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
                     }
-                    if (ws.hasWorkspace) {
+                } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { pickFolder.launch(null) },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Rounded.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("更换工作区")
+                        }
                         OutlinedButton(onClick = { manager.clearWorkspace() }) {
                             Text("清除")
                         }
@@ -1220,10 +1254,17 @@ private fun WelcomePrompts(onPrompt: (String) -> Unit) {
 
 @Composable
 private fun ProcessingCard() {
+    val infiniteTransition = rememberInfiniteTransition(label = "processing")
+    val alpha by infiniteTransition.animateFloat(
+        initialValue = 0.3f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(animation = tween(800, easing = LinearEasing), repeatMode = RepeatMode.Reverse),
+        label = "pulse"
+    )
     Surface(color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f), contentColor = MaterialTheme.colorScheme.onSecondaryContainer, shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
         Row(Modifier.padding(horizontal = 14.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Box(Modifier.size(10.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
-            Text("pi 正在处理…", fontWeight = FontWeight.SemiBold)
+            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.primary)
+            Text("pi 正在处理…", fontWeight = FontWeight.SemiBold, modifier = Modifier.graphicsLayer { this.alpha = alpha })
         }
     }
 }
@@ -2258,8 +2299,8 @@ private fun ChatComposer(
                 ComposerIconButton(Icons.Rounded.Tune, "Compact", selected = autoCompact, onClick = { onShowCompactMenu(true) })
                 ComposerIconButton(Icons.Rounded.AttachFile, "附件", selected = attachments.isNotEmpty(), onClick = onPickFiles)
                 ComposerIconButton(Icons.Rounded.Add, "更多", onClick = { onShowCompactMenu(true) })
-                if (isWorking && !canSend) FilledIconButton(onClick = onAbort, modifier = Modifier.size(38.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.error)) { Icon(Icons.Rounded.Stop, contentDescription = "中止", modifier = Modifier.size(22.dp)) }
-                else FilledIconButton(onClick = { if (isWorking) onShowSendModeMenu(true) else onSend(null) }, enabled = canSend && state.canUseActiveSession, modifier = Modifier.size(38.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = if (canSend && state.canUseActiveSession) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (canSend && state.canUseActiveSession) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant, disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .55f))) { Icon(Icons.Rounded.ArrowUpward, contentDescription = "发送", modifier = Modifier.size(22.dp)) }
+                if (isWorking) FilledIconButton(onClick = onAbort, modifier = Modifier.size(38.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.error)) { Icon(Icons.Rounded.Stop, contentDescription = "停止", modifier = Modifier.size(22.dp)) }
+                else FilledIconButton(onClick = { onSend(null) }, enabled = canSend && state.canUseActiveSession, modifier = Modifier.size(38.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = if (canSend && state.canUseActiveSession) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (canSend && state.canUseActiveSession) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant, disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .55f))) { Icon(Icons.Rounded.ArrowUpward, contentDescription = "发送", modifier = Modifier.size(22.dp)) }
             }
             // ── Deep Index Mode toggle ──
             // Combines CodeGraph + ECC + codebase-memory-mcp into one tool chain.
