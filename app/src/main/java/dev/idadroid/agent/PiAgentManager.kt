@@ -731,8 +731,14 @@ class PiAgentManager(
             }
             is PiRuntimeEvent.RawStdout -> appendRaw("stdout: ${event.line}")
             is PiRuntimeEvent.Exited -> {
-                repo.updateRuntimeStatus(sessionId, "error", event.error)
-                _state.update { it.copy(status = "error", error = event.error, turnActive = false, sessions = repo.listSessions()) }
+                val wasWorking = _state.value.turnActive
+                val stderrTail = _state.value.stderrTail.trim().takeLast(500)
+                val errorMsg = event.error ?: if (stderrTail.isNotBlank()) "Agent 进程退出\nstderr:\n$stderrTail" else "Agent 进程退出"
+                repo.updateRuntimeStatus(sessionId, "error", errorMsg)
+                _state.update { it.copy(status = "error", error = errorMsg, turnActive = false, sessions = repo.listSessions()) }
+                if (wasWorking) {
+                    appendMessage(ChatMessage(newMessageId(), "system", "Agent 报错：$errorMsg", System.currentTimeMillis()))
+                }
             }
             is PiRuntimeEvent.RpcEvent -> handleAgentEvent(sessionId, event.event)
         }
@@ -809,6 +815,11 @@ class PiAgentManager(
                 }
             }
             "auto_retry_end" -> if (event.boolean("success") == false) event.string("finalError")?.let { appendSystemError(it) }
+            "error" -> {
+                val errMsg = event.string("error") ?: event.string("message") ?: event.toString()
+                setTurnActive(sessionId, false)
+                appendSystemError(errMsg)
+            }
             else -> appendRaw("event: ${event.string("type") ?: event.toString()}")
         }
     }
@@ -824,7 +835,12 @@ class PiAgentManager(
                 val id = tool.toolCallId ?: delta.string("id") ?: delta.string("contentIndex") ?: "tool"
                 upsertTool(id, tool.toolName ?: "tool", tool.toolArgs, null, null, "pending")
             }
-            "done", "error" -> setTurnActive(sessionId, false)
+            "done" -> setTurnActive(sessionId, false)
+            "error" -> {
+                setTurnActive(sessionId, false)
+                val errMsg = delta.string("error") ?: delta.string("message") ?: delta.string("delta") ?: "消息处理错误"
+                appendSystemError(errMsg)
+            }
         }
     }
 
