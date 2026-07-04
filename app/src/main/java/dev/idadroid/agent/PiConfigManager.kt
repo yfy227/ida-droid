@@ -47,7 +47,7 @@ class PiConfigManager(
             envText = JsonFormats.pretty.encodeToString(cfg.env),
             appendSystem = appendSystemFile.readTextOrDefault(defaultAppendSystemPrompt()),
             extraArgsText = cfg.extraArgs.joinToString("\n"),
-            materializedDir = "$workspacePath/.idadroid/pi-agent",
+            materializedDir = "${workspaceProotPath()}/.idadroid/pi-agent",
             modelCatalog = parseAgentModelCatalog(modelsText)
         )
     }
@@ -110,7 +110,7 @@ class PiConfigManager(
         {
           "quietStartup": true,
           "enableInstallTelemetry": false,
-          "sessionDir": "$workspacePath/.pi-sessions",
+          "sessionDir": "${workspaceProotPath()}/.pi-sessions",
           "compaction": {
             "enabled": true,
             "reserveTokens": 16384,
