@@ -23,11 +23,19 @@ val releaseStoreFile = localOrGradleProperty("IDADROID_RELEASE_STORE_FILE")
 val releaseStorePassword = localOrGradleProperty("IDADROID_RELEASE_STORE_PASSWORD")
 val releaseKeyAlias = localOrGradleProperty("IDADROID_RELEASE_KEY_ALIAS")
 val releaseKeyPassword = localOrGradleProperty("IDADROID_RELEASE_KEY_PASSWORD")
+
+// 如果没有配置签名属性，使用项目自带的默认 keystore（保证每次构建签名一致）
+val defaultKeystore = rootProject.file("idadroid-release.keystore")
+val effectiveStoreFile = releaseStoreFile ?: if (defaultKeystore.isFile) "idadroid-release.keystore" else null
+val effectiveStorePassword = releaseStorePassword ?: if (defaultKeystore.isFile) "idadroid2024" else null
+val effectiveKeyAlias = releaseKeyAlias ?: if (defaultKeystore.isFile) "idadroid" else null
+val effectiveKeyPassword = releaseKeyPassword ?: if (defaultKeystore.isFile) "idadroid2024" else null
+
 val releaseSigningConfigured = listOf(
-    releaseStoreFile,
-    releaseStorePassword,
-    releaseKeyAlias,
-    releaseKeyPassword,
+    effectiveStoreFile,
+    effectiveStorePassword,
+    effectiveKeyAlias,
+    effectiveKeyPassword,
 ).all { !it.isNullOrBlank() }
 
 android {
@@ -50,10 +58,10 @@ android {
     signingConfigs {
         if (releaseSigningConfigured) {
             create("release") {
-                storeFile = file(releaseStoreFile!!)
-                storePassword = releaseStorePassword
-                keyAlias = releaseKeyAlias
-                keyPassword = releaseKeyPassword
+                storeFile = file(effectiveStoreFile!!)
+                storePassword = effectiveStorePassword
+                keyAlias = effectiveKeyAlias
+                keyPassword = effectiveKeyPassword
             }
         }
     }
