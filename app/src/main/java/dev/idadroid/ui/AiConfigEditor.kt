@@ -113,7 +113,7 @@ private val PROVIDER_PRESETS = listOf(
     ProviderPreset("groq", "Groq", "https://api.groq.com/openai/v1", "GROQ_API_KEY", Color(0xFFF55036), "超低延迟推理"),
     ProviderPreset("xai", "xAI Grok", "https://api.x.ai/v1", "XAI_API_KEY", Color(0xFF000000), "Grok 系列"),
     ProviderPreset("together", "Together AI", "https://api.together.xyz/v1", "TOGETHER_API_KEY", Color(0xFF0F6FFF), "开源模型聚合"),
-    ProviderPreset("openai-generic", "自定义 (OpenAI 兼容)", "", "CUSTOM_API_KEY", Color(0xFF6B7280), "手动填写 Base URL，使用 OpenAI 兼容协议")
+    ProviderPreset("openai-generic", "自定义 (OpenAI 兼容)", "", "OPENAI_API_KEY", Color(0xFF6B7280), "手动填写 Base URL，使用 OpenAI 兼容协议")
 )
 
 private val MODEL_SUGGESTIONS: Map<String, List<String>> = mapOf(

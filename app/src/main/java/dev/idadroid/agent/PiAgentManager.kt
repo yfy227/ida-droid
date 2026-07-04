@@ -463,7 +463,12 @@ class PiAgentManager(
     }
 
     fun setSessionModel(model: PiModel) {
-        val provider = model.providerNameOrNull() ?: return setError("模型缺少 provider")
+        val rawProvider = model.providerNameOrNull() ?: return setError("模型缺少 provider")
+        // pi agent 不认识 "openai-generic"，映射为 "openai"
+        val provider = when (rawProvider) {
+            "custom", "openai-generic" -> "openai"
+            else -> rawProvider
+        }
         scope.launch {
             val sessionId = _state.value.activeSessionId ?: return@launch
             runCatching {

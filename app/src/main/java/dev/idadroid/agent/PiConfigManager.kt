@@ -88,11 +88,11 @@ class PiConfigManager(
             lines += "export $safeKey=${dev.idadroid.proot.IdaProotRuntime.shellQuote(value)}"
         }
         
-        // 导出当前 provider 的 Base URL 作为 OPENAI_BASE_URL
-        // 这样 pi agent 用 --provider openai 时会连用户配的 Base URL 而非默认的 api.openai.com
+        // 只对 openai/openai-generic/custom provider 导出 OPENAI_BASE_URL
+        // 其他 provider (deepseek, anthropic 等) pi agent 内置了 Base URL
         val snapshot = readSnapshot()
         val defaultProviderId = snapshot.defaultProvider.trim()
-        if (defaultProviderId.isNotBlank()) {
+        if (defaultProviderId in setOf("openai", "openai-generic", "custom")) {
             val modelsObj = if (snapshot.modelsText.isBlank()) JsonObject(emptyMap()) 
                 else JsonFormats.pretty.parseToJsonElement(snapshot.modelsText).jsonObject
             val providersObj = modelsObj["providers"] as? JsonObject ?: JsonObject(emptyMap())
