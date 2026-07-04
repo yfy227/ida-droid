@@ -662,7 +662,7 @@ fun SettingsScreen(
         TextEditDialog(
             title = "初始工作目录", initialValue = terminal.initialCwd,
             label = "容器内路径",
-            helper = "例如 /root 或 /root/pi_workspace（可自定义）",
+            helper = "例如 /root 或 /root/pi_workspace（可在下方自定义）",
             onDismiss = { editTerminalCwd = false },
             onSave = { value -> settingsStore.updateTerminalInitialCwd(value); editTerminalCwd = false }
         )
