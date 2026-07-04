@@ -12,7 +12,7 @@ class AgentSessionRepository(
     private val paths: EnvironmentPaths
 ) {
     private val settings = dev.idadroid.settings.IdaDroidSettings(context.applicationContext)
-    private val storeFile get() {
+    private val storeFile: java.io.File get() {
         val ws = settings.envSettings.value.workspacePath.ifBlank { dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH }
         val rel = ws.removePrefix("/").removePrefix("root/")
         return java.io.File(paths.rootfsDir, "$rel/.idadroid/agent-sessions.json")
@@ -57,7 +57,7 @@ class AgentSessionRepository(
             id = "session-${UUID.randomUUID()}",
             name = "默认会话",
             status = "idle",
-            cwd = "/root/pi_workspace",
+            cwd = settings.envSettings.value.workspacePath.ifBlank { dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH },
             provider = provider?.trim()?.takeIf { it.isNotBlank() },
             model = model?.trim()?.takeIf { it.isNotBlank() },
             thinkingLevel = thinkingLevel?.trim()?.takeIf { it.isNotBlank() },
@@ -75,7 +75,7 @@ class AgentSessionRepository(
             id = "session-${UUID.randomUUID()}",
             name = name?.trim()?.takeIf { it.isNotBlank() } ?: "Session ${store.sessions.size + 1}",
             status = "idle",
-            cwd = "/root/pi_workspace",
+            cwd = settings.envSettings.value.workspacePath.ifBlank { dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH },
             provider = provider?.trim()?.takeIf { it.isNotBlank() },
             model = model?.trim()?.takeIf { it.isNotBlank() },
             thinkingLevel = thinkingLevel?.trim()?.takeIf { it.isNotBlank() },
