@@ -1,8 +1,10 @@
 package dev.idadroid.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -12,26 +14,29 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.CloudUpload
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.NetworkCheck
 import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -53,6 +58,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -247,6 +253,7 @@ fun AiConfigEditor(
     var showAdvanced by remember { mutableStateOf(false) }
     var testingProvider by remember { mutableStateOf<String?>(null) }
     var showModelPicker by remember { mutableStateOf(false) }
+    var showProviderPicker by remember { mutableStateOf(false) }
 
     // 当前选中的 provider — 始终是 ProviderConfig 类型
     val currentProvider = remember(parsed.providers, snapshot.defaultProvider) {
@@ -277,29 +284,16 @@ fun AiConfigEditor(
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("AI 配置", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
 
-                // Provider 下拉
-                var providerExpanded by remember { mutableStateOf(false) }
-                ExposedDropdownMenuBox(expanded = providerExpanded, onExpandedChange = { providerExpanded = it }) {
-                    OutlinedTextField(
-                        value = currentProvider.displayName,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Provider") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = providerExpanded) },
-                        modifier = Modifier.fillMaxWidth().menuAnchor()
-                    )
-                    ExposedDropdownMenu(expanded = providerExpanded, onDismissRequest = { providerExpanded = false }) {
-                        PROVIDER_PRESETS.forEach { p ->
-                            DropdownMenuItem(
-                                text = { Column { Text(p.displayName, fontWeight = FontWeight.Medium); Text(p.description, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } },
-                                onClick = {
-                                    providerExpanded = false
-                                    switchProvider(snapshot, parsed, p, onSnapshotChange)
-                                }
-                            )
-                        }
-                    }
-                }
+                // Provider 选择 (点击打开搜索弹窗)
+                OutlinedTextField(
+                    value = currentProvider.displayName,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Provider") },
+                    leadingIcon = { Box(Modifier.size(24.dp).clip(CircleShape).background(currentProvider.color), contentAlignment = Alignment.Center) { Text(currentProvider.displayName.take(1), color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold) } },
+                    trailingIcon = { Icon(Icons.Rounded.ExpandMore, contentDescription = null) },
+                    modifier = Modifier.fillMaxWidth().clickable { showProviderPicker = true }
+                )
 
                 // Base URL (自动填充，可编辑) — 本地缓冲，失焦写回
                 OutlinedTextField(
@@ -513,33 +507,107 @@ fun AiConfigEditor(
         SnackbarHost(hostState = snackbarHost) { Snackbar(it) }
     }
 
-    // ── Model picker bottom sheet ──
+    // ── Model picker bottom sheet (搜索 + 完整列表) ──
     if (showModelPicker) {
         val sheetState = rememberModalBottomSheetState()
+        var modelSearch by remember { mutableStateOf("") }
+        // 合并已配置模型 + 推荐模型 + 已输入的模型
+        val allModels = remember(currentProvider, modelSearch) {
+            val configured = currentProvider.models.map { it.id }
+            val suggested = MODEL_SUGGESTIONS[currentProvider.id] ?: emptyList()
+            val combined = (configured + suggested).distinct()
+            if (modelSearch.isBlank()) combined else combined.filter { it.contains(modelSearch, ignoreCase = true) }
+        }
         ModalBottomSheet(onDismissRequest = { showModelPicker = false }, sheetState = sheetState) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("选择模型", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                currentProvider.models.forEach { m ->
+                OutlinedTextField(
+                    value = modelSearch, onValueChange = { modelSearch = it },
+                    placeholder = { Text("搜索或输入模型名...", fontSize = 13.sp) },
+                    leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    trailingIcon = { if (modelSearch.isNotEmpty()) IconButton(onClick = { modelSearch = "" }) { Icon(Icons.Rounded.Close, contentDescription = null, modifier = Modifier.size(18.dp)) } },
+                    singleLine = true, modifier = Modifier.fillMaxWidth()
+                )
+                // 如果搜索的内容不在列表里，可以直接用它作为模型名
+                if (modelSearch.isNotBlank() && allModels.none { it.equals(modelSearch, ignoreCase = true) }) {
                     Surface(modifier = Modifier.fillMaxWidth().clickable {
-                        modelInput = m.id
-                        onSnapshotChange(snapshot.copy(defaultModel = m.id, defaultProvider = currentProvider.id)); showModelPicker = false
-                    }) {
-                        Text(m.name, modifier = Modifier.padding(12.dp), fontSize = 13.sp)
+                        modelInput = modelSearch.trim()
+                        onSnapshotChange(snapshot.copy(defaultModel = modelSearch.trim(), defaultProvider = currentProvider.id)); showModelPicker = false
+                    }, shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)) {
+                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Rounded.Add, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("使用 \"$modelSearch\"", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                        }
                     }
                 }
-                MODEL_SUGGESTIONS[currentProvider.id]?.forEach { id ->
-                    if (currentProvider.models.none { it.id == id }) {
+                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 350.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    items(allModels.size) { idx ->
+                        val modelId = allModels[idx]
+                        val isConfigured = currentProvider.models.any { it.id == modelId }
+                        val isSelected = modelId == snapshot.defaultModel
                         Surface(modifier = Modifier.fillMaxWidth().clickable {
-                            modelInput = id
-                            onSnapshotChange(snapshot.copy(defaultModel = id, defaultProvider = currentProvider.id)); showModelPicker = false
-                        }) {
-                            Text("$id (推荐)", modifier = Modifier.padding(12.dp), fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                            modelInput = modelId
+                            onSnapshotChange(snapshot.copy(defaultModel = modelId, defaultProvider = currentProvider.id)); showModelPicker = false
+                        }, shape = RoundedCornerShape(8.dp), color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)) {
+                            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Rounded.SmartToy, contentDescription = null, tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(modelId, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                                if (!isConfigured) Text("推荐", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                if (isSelected) Icon(Icons.Rounded.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                            }
                         }
                     }
                 }
                 Spacer(Modifier.height(20.dp))
             }
         }
+    }
+
+    // ── Provider picker dialog (搜索 + 列表) ──
+    if (showProviderPicker) {
+        var providerSearch by remember { mutableStateOf("") }
+        val filteredPresets = remember(providerSearch) {
+            if (providerSearch.isEmpty()) PROVIDER_PRESETS
+            else PROVIDER_PRESETS.filter { it.displayName.contains(providerSearch, ignoreCase = true) || it.id.contains(providerSearch, ignoreCase = true) || it.description.contains(providerSearch, ignoreCase = true) }
+        }
+        AlertDialog(
+            onDismissRequest = { showProviderPicker = false },
+            title = { Text("选择 Provider") },
+            text = {
+                Column(Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = providerSearch, onValueChange = { providerSearch = it },
+                        placeholder = { Text("搜索 Provider...", fontSize = 13.sp) },
+                        leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                        trailingIcon = { if (providerSearch.isNotEmpty()) IconButton(onClick = { providerSearch = "" }) { Icon(Icons.Rounded.Close, contentDescription = null, modifier = Modifier.size(18.dp)) } },
+                        singleLine = true, modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                    )
+                    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 400.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        items(filteredPresets.size) { idx ->
+                            val p = filteredPresets[idx]
+                            Surface(
+                                modifier = Modifier.fillMaxWidth().clickable { switchProvider(snapshot, parsed, p, onSnapshotChange); showProviderPicker = false },
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (p.id == currentProvider.id) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                            ) {
+                                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Box(Modifier.size(28.dp).clip(CircleShape).background(p.color), contentAlignment = Alignment.Center) { Text(p.displayName.take(1), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(p.displayName, fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                                        Text(p.description, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    if (p.id == currentProvider.id) Icon(Icons.Rounded.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showProviderPicker = false }) { Text("取消") } }
+        )
     }
 
     // ── Export dialog ──
