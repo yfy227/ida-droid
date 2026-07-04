@@ -101,6 +101,7 @@ class PiConfigManager(
                 ?: providerObj?.get("baseUrl")?.jsonPrimitive?.contentOrNull
             if (!baseUrl.isNullOrBlank()) {
                 lines += "export OPENAI_BASE_URL=${dev.idadroid.proot.IdaProotRuntime.shellQuote(baseUrl)}"
+                lines += "export OPENAI_API_BASE=${dev.idadroid.proot.IdaProotRuntime.shellQuote(baseUrl)}"
             }
         }
         
