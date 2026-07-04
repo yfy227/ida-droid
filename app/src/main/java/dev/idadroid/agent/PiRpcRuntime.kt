@@ -155,20 +155,21 @@ class PiRpcRuntime(
     fun stderrTail(): String = recentStderr
 
     private fun buildStartScript(session: AgentSessionRecord): String = buildString {
-        appendLine("cd /root/pi_workspace")
-        appendLine("export PI_CODING_AGENT_DIR=/root/pi_workspace/.idadroid/pi-agent")
+        val ws = configManager.workspaceProotPath()
+        appendLine("cd $ws")
+        appendLine("export PI_CODING_AGENT_DIR=$ws/.idadroid/pi-agent")
         appendLine("export PI_SKIP_VERSION_CHECK=1")
         appendLine("export PI_TELEMETRY=0")
         appendLine("export TERM=dumb")
         val envExports = configManager.runtimeEnvExports()
         if (envExports.isNotBlank()) appendLine(envExports)
-        appendLine("export NODE_OPTIONS=\"\${NODE_OPTIONS:-} --require /root/pi_workspace/.idadroid/pi-agent/rpc-stdio-guard.cjs\"")
+        appendLine("export NODE_OPTIONS=\"\${NODE_OPTIONS:-} --require $ws/.idadroid/pi-agent/rpc-stdio-guard.cjs\"")
         append("exec pi --mode rpc ")
         val sessionFile = session.sessionFile?.trim().orEmpty()
         if (sessionFile.isNotBlank()) {
             append("--session ").append(IdaProotRuntime.shellQuote(sessionFile)).append(' ')
         } else {
-            append("--session-dir /root/pi_workspace/.pi-sessions ")
+            append("--session-dir $ws/.pi-sessions ")
         }
         session.provider?.takeIf { it.isNotBlank() }?.let { append("--provider ").append(IdaProotRuntime.shellQuote(it)).append(' ') }
         session.model?.takeIf { it.isNotBlank() }?.let { append("--model ").append(IdaProotRuntime.shellQuote(it)).append(' ') }

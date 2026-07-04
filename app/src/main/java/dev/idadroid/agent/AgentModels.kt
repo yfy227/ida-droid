@@ -11,7 +11,7 @@ data class AgentSessionRecord(
     val createdAt: String = "",
     val updatedAt: String = "",
     val lastActiveAt: String? = null,
-    val cwd: String = "/root/pi_workspace",
+    val cwd: String = "",
     val provider: String? = null,
     val model: String? = null,
     val thinkingLevel: String? = null,

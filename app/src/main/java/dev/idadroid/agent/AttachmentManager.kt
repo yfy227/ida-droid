@@ -39,7 +39,14 @@ class AttachmentManager(
     private val paths: EnvironmentPaths = EnvironmentPaths.of(context)
 ) {
     private val appContext = context.applicationContext
-    private val uploadHostDir: File get() = File(paths.rootfsDir, "root/pi_workspace/.upload")
+    private val settings = dev.idadroid.settings.IdaDroidSettings(appContext)
+    private val workspaceProotPath: String get() = settings.envSettings.value.workspacePath.ifBlank { dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH }
+    private val uploadHostDir: File get() {
+        val ws = workspaceProotPath
+        val rel = ws.removePrefix("/").removePrefix("root/")
+        return File(paths.rootfsDir, "$rel/.upload")
+    }
+    private val uploadProotPath: String get() = "$workspaceProotPath/.upload"
 
     suspend fun readDraft(uri: Uri, maxBytes: Long = 50L * 1024L * 1024L): DraftAttachment = withContext(Dispatchers.IO) {
         val name = queryDisplayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/') ?: "attachment"
@@ -58,7 +65,7 @@ class AttachmentManager(
         attachments.map { draft ->
             val file = uniqueFile(uploadHostDir, draft.name)
             file.writeBytes(draft.bytes)
-            val prootPath = "/root/pi_workspace/.upload/${file.name}"
+            val prootPath = "$uploadProotPath/${file.name}"
             StoredAttachment(
                 display = if (draft.isImage) {
                     ChatAttachment.Image(draft.name, draft.mimeType.ifBlank { "image/png" }, Base64.encodeToString(draft.bytes, Base64.NO_WRAP), path = prootPath, size = draft.size)
@@ -73,7 +80,7 @@ class AttachmentManager(
         }
     }
 
-    suspend fun expandFileReferencesForPrompt(message: String, cwd: String = "/root/pi_workspace"): ExpandedPrompt = withContext(Dispatchers.IO) {
+    suspend fun expandFileReferencesForPrompt(message: String, cwd: String = workspaceProotPath): ExpandedPrompt = withContext(Dispatchers.IO) {
         val refs = parseFileRefs(message)
         if (refs.isEmpty()) return@withContext ExpandedPrompt(message, emptyList(), emptySet())
         val attempted = linkedSetOf<String>()
@@ -109,14 +116,16 @@ class AttachmentManager(
     private data class WorkspaceRef(val prootPath: String, val hostFile: File)
 
     private fun resolveWorkspaceReference(input: String, cwd: String): WorkspaceRef {
-        val base = normalizeWorkspacePath(cwd.ifBlank { "/root/pi_workspace" })
+        val ws = workspaceProotPath
+        val base = normalizeWorkspacePath(cwd.ifBlank { ws })
         val raw = input.trim()
         val abs = if (raw.startsWith("/")) normalizeWorkspacePath(raw) else normalizeWorkspacePath("$base/$raw")
-        if (abs != "/root/pi_workspace" && !abs.startsWith("/root/pi_workspace/")) {
-            throw IllegalArgumentException("文件路径必须位于 /root/pi_workspace 内：$input")
+        if (abs != ws && !abs.startsWith("$ws/")) {
+            throw IllegalArgumentException("文件路径必须位于 $ws 内：$input")
         }
-        val rel = abs.removePrefix("/root/pi_workspace").trimStart('/')
-        return WorkspaceRef(abs, if (rel.isBlank()) File(paths.rootfsDir, "root/pi_workspace") else File(paths.rootfsDir, "root/pi_workspace/$rel"))
+        val rel = abs.removePrefix(ws).trimStart('/')
+        val hostRoot = if (ws.startsWith("/root/")) File(paths.rootfsDir, ws.removePrefix("/")) else File(ws)
+        return WorkspaceRef(abs, if (rel.isBlank()) hostRoot else File(hostRoot, rel))
     }
 
     private fun normalizeWorkspacePath(value: String): String {
@@ -128,7 +137,7 @@ class AttachmentManager(
                 else -> parts += part
             }
         }
-        return "/${parts.joinToString("/")}".trimEnd('/').ifBlank { "/root/pi_workspace" }
+        return "/${parts.joinToString("/")}".trimEnd('/').ifBlank { workspaceProotPath }
     }
 
     private fun parseFileRefs(text: String): List<String> {

@@ -6,8 +6,9 @@ import dev.idadroid.deepindex.DeepIndexScriptBuilder
 import java.io.File
 
 class PiWorkspaceMaterializer {
-    fun materialize(rootfsDir: File) {
-        val workspace = File(rootfsDir, "root/pi_workspace")
+    fun materialize(rootfsDir: File, workspacePath: String = "/root/pi_workspace") {
+        val wsRel = workspacePath.removePrefix("/").removePrefix("root/").ifBlank { "root/pi_workspace" }
+        val workspace = File(rootfsDir, wsRel)
         val uploadDir = File(workspace, ".upload")
         val transferDir = File(rootfsDir, "root/.mcp-transfer")
         val sessionDir = File(workspace, ".pi-sessions")
@@ -20,8 +21,8 @@ class PiWorkspaceMaterializer {
 
         listOf(workspace, uploadDir, transferDir, sessionDir, piDir, idaDroidDir, piAgentDir, logsDir, scriptsDir, deepIndexDir).forEach { it.mkdirs() }
 
-        File(piDir, "APPEND_SYSTEM.md").writeTextIfMissing(defaultSystemAppendPrompt())
-        File(piAgentDir, "settings.json").writeTextIfMissing(defaultPiSettings())
+        File(piDir, "APPEND_SYSTEM.md").writeTextIfMissing(defaultSystemAppendPrompt(workspacePath))
+        File(piAgentDir, "settings.json").writeTextIfMissing(defaultPiSettings(workspacePath))
         File(piAgentDir, "rpc-stdio-guard.cjs").writeText(rpcStdioGuardScript())
         File(scriptsDir, "validate.sh").writeText(validateScript())
         File(scriptsDir, "start-ida-vnc.sh").writeText(startIdaVncPlaceholder())
@@ -40,11 +41,11 @@ class PiWorkspaceMaterializer {
         if (!isFile) writeText(text)
     }
 
-    private fun defaultPiSettings(): String = """
+    private fun defaultPiSettings(workspacePath: String = "/root/pi_workspace"): String = """
         {
           "quietStartup": true,
           "enableInstallTelemetry": false,
-          "sessionDir": "/root/pi_workspace/.pi-sessions",
+          "sessionDir": "$workspacePath/.pi-sessions",
           "compaction": {
             "enabled": true,
             "reserveTokens": 16384,

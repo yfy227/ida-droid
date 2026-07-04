@@ -1,5 +1,6 @@
 package dev.idadroid.agent
 
+import android.content.Context
 import dev.idadroid.env.EnvironmentPaths
 import dev.idadroid.util.JsonFormats
 import java.time.Instant
@@ -7,9 +8,15 @@ import java.util.UUID
 import kotlinx.serialization.encodeToString
 
 class AgentSessionRepository(
+    context: Context,
     private val paths: EnvironmentPaths
 ) {
-    private val storeFile get() = java.io.File(paths.rootfsDir, "root/pi_workspace/.idadroid/agent-sessions.json")
+    private val settings = dev.idadroid.settings.IdaDroidSettings(context.applicationContext)
+    private val storeFile get() {
+        val ws = settings.envSettings.value.workspacePath.ifBlank { dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH }
+        val rel = ws.removePrefix("/").removePrefix("root/")
+        return java.io.File(paths.rootfsDir, "$rel/.idadroid/agent-sessions.json")
+    }
     // Protects all read/write access to storeFile so that concurrent coroutines don't race.
     private val lock = Any()
 

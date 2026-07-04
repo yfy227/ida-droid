@@ -36,8 +36,16 @@ class PiAgentManager(
     /** 用户设置的工作区路径 (proot 内可见路径)，默认 /root/pi_workspace */
     private val workspaceProotPath: String get() = settings.envSettings.value.workspacePath.ifBlank { dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH }
     /** 工作区在主机文件系统上的根目录 */
-    private val workspaceHostRoot: File get() = File(paths.rootfsDir, workspaceProotPath.removePrefix("/").removePrefix("root/"))
-    private val repo = AgentSessionRepository(paths)
+    private val workspaceHostRoot: File get() {
+        val ws = workspaceProotPath
+        // /root/xxx → 在 rootfs 内
+        if (ws.startsWith("/root/")) return File(paths.rootfsDir, ws.removePrefix("/"))
+        // /sdcard/xxx 或 /storage/xxx → proot 已绑定，直接用主机路径
+        if (ws.startsWith("/sdcard") || ws.startsWith("/storage")) return File(ws)
+        // 其他情况默认在 rootfs 内
+        return File(paths.rootfsDir, ws.removePrefix("/").ifBlank { "root/pi_workspace" })
+    }
+    private val repo = AgentSessionRepository(appContext, paths)
     private val configManager = PiConfigManager(appContext, paths)
     val aiConfigTools = AiConfigTools(paths, configManager)
     private val attachmentManager = AttachmentManager(appContext, paths)
@@ -604,7 +612,7 @@ class PiAgentManager(
     private suspend fun startSessionInternal(sessionId: String): PiRpcRuntime = withContext(Dispatchers.IO) {
         requireReady()
         ProotBinaryInstaller(appContext, paths).ensureInstalled()
-        PiWorkspaceMaterializer().materialize(paths.rootfsDir)
+        PiWorkspaceMaterializer().materialize(paths.rootfsDir, workspaceProotPath)
         val snapshot = configManager.readSnapshot()
         require(snapshot.modelCatalog.isUsable) {
             snapshot.modelCatalog.parseError?.let { "models.json 配置无效：$it" } ?: "请先在 models.json 中配置至少一个 provider 和 model"

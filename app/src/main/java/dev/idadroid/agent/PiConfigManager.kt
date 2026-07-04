@@ -16,7 +16,9 @@ class PiConfigManager(
 ) {
     private val appContext = context.applicationContext
     private val settings = dev.idadroid.settings.IdaDroidSettings(appContext)
-    private val workspace get() = File(paths.rootfsDir, settings.envSettings.value.workspacePath.removePrefix("/").removePrefix("root/").ifBlank { "root/pi_workspace" })
+    /** 用户设置的工作区路径 (proot 内可见路径) */
+    fun workspaceProotPath(): String = settings.envSettings.value.workspacePath.ifBlank { dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH }
+    private val workspace get() = File(paths.rootfsDir, workspaceProotPath().removePrefix("/").removePrefix("root/").ifBlank { "root/pi_workspace" })
     private val idaDroidDir get() = File(workspace, ".idadroid")
     private val agentDir get() = File(idaDroidDir, "pi-agent")
     private val piDir get() = File(workspace, ".pi")
@@ -142,9 +144,9 @@ fun defaultSystemAppendPrompt(workspacePath: String = "/root/pi_workspace"): Str
 - IDA 主目录: /root/ida-pro-9.3
 - ida-mcp 入口: /root/ida-pro-9.3/ida-mcp
 - ida-mcp 使用文档: /root/ida-pro-9.3/IDA_MCP_MCPC_USAGE.md
-- Android 附件: /root/pi_workspace/.upload
+- Android 附件: $workspacePath/.upload
 - MCP 文件传输: /root/.mcp-transfer (独立于工作区，专门给 MCP 快速打开文件)
-- pi 会话: /root/pi_workspace/.pi-sessions
+- pi 会话: $workspacePath/.pi-sessions
 
 ## 工作准则
 
