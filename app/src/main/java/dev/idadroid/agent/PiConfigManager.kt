@@ -9,6 +9,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 class PiConfigManager(
     private val context: Context,
@@ -78,11 +80,31 @@ class PiConfigManager(
 
     fun runtimeEnvExports(): String {
         val cfg = readUserConfig()
-        if (cfg.env.isEmpty()) return ""
-        return cfg.env.entries.joinToString("\n") { (key, value) ->
+        val lines = mutableListOf<String>()
+        
+        // 导出 envText 里的环境变量 (API Key 等)
+        cfg.env.forEach { (key, value) ->
             val safeKey = key.replace(Regex("[^A-Za-z0-9_]"), "_").takeIf { it.isNotBlank() } ?: "IDADROID_ENV"
-            "export $safeKey=${dev.idadroid.proot.IdaProotRuntime.shellQuote(value)}"
+            lines += "export $safeKey=${dev.idadroid.proot.IdaProotRuntime.shellQuote(value)}"
         }
+        
+        // 导出当前 provider 的 Base URL 作为 OPENAI_BASE_URL
+        // 这样 pi agent 用 --provider openai 时会连用户配的 Base URL 而非默认的 api.openai.com
+        val snapshot = readSnapshot()
+        val defaultProviderId = snapshot.defaultProvider.trim()
+        if (defaultProviderId.isNotBlank()) {
+            val modelsObj = if (snapshot.modelsText.isBlank()) JsonObject(emptyMap()) 
+                else JsonFormats.pretty.parseToJsonElement(snapshot.modelsText).jsonObject
+            val providersObj = modelsObj["providers"] as? JsonObject ?: JsonObject(emptyMap())
+            val providerObj = providersObj[defaultProviderId] as? JsonObject
+            val baseUrl = providerObj?.get("baseURL")?.jsonPrimitive?.contentOrNull
+                ?: providerObj?.get("baseUrl")?.jsonPrimitive?.contentOrNull
+            if (!baseUrl.isNullOrBlank()) {
+                lines += "export OPENAI_BASE_URL=${dev.idadroid.proot.IdaProotRuntime.shellQuote(baseUrl)}"
+            }
+        }
+        
+        return lines.joinToString("\n")
     }
 
     fun extraArgs(): List<String> = readUserConfig().extraArgs

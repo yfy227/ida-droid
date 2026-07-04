@@ -172,9 +172,10 @@ class PiRpcRuntime(
             append("--session-dir $ws/.pi-sessions ")
         }
         session.provider?.takeIf { it.isNotBlank() }?.let { rawProvider ->
-            // "custom" 不是 pi 认识的 provider，映射为 openai-generic
+            // pi agent 不认识 "custom" 和 "openai-generic"
+            // 对于自定义 OpenAI 兼容 API，用 "openai" provider + 自定义 Base URL
             val piProvider = when (rawProvider) {
-                "custom" -> "openai-generic"
+                "custom", "openai-generic" -> "openai"
                 else -> rawProvider
             }
             append("--provider ").append(IdaProotRuntime.shellQuote(piProvider)).append(' ')
