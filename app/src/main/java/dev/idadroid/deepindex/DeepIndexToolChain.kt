@@ -32,6 +32,8 @@ class DeepIndexToolChain(
     private val paths: EnvironmentPaths = EnvironmentPaths.of(context)
 ) {
     private val appContext = context.applicationContext
+    private val settings = dev.idadroid.settings.IdaDroidSettings(appContext)
+    private fun workspacePath(): String = settings.envSettings.value.workspacePath.ifBlank { dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH }
 
     private val _enabled = MutableStateFlow(false)
     val enabled: StateFlow<Boolean> = _enabled.asStateFlow()
@@ -64,7 +66,7 @@ class DeepIndexToolChain(
     fun systemPromptFragment(): String = if (!_enabled.value) "" else """
         ## Deep Index Mode (active)
         The deep-index tool chain is ENABLED for this session. A unified helper
-        script is available at /root/pi_workspace/.idadroid/scripts/deep-index.sh
+        script is available at ${workspacePath()}/.idadroid/scripts/deep-index.sh
         (recommended alias: `deep-index`). It combines three open-source toolkits:
 
         ### CodeGraph-style — structural code intelligence
@@ -98,9 +100,9 @@ class DeepIndexToolChain(
 
     companion object {
         const val SCRIPT_NAME = "deep-index.sh"
-        const val SCRIPT_PROOT_PATH = "/root/pi_workspace/.idadroid/scripts/deep-index.sh"
-        const val MEMORY_FILE = "/root/pi_workspace/.idadroid/deep-index/memory.json"
-        const val INDEX_DIR = "/root/pi_workspace/.idadroid/deep-index"
+        val SCRIPT_PROOT_PATH: String get() = "${dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH}/.idadroid/scripts/deep-index.sh"
+        val MEMORY_FILE: String get() = "${dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH}/.idadroid/deep-index/memory.json"
+        val INDEX_DIR: String get() = "${dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH}/.idadroid/deep-index"
     }
 }
 

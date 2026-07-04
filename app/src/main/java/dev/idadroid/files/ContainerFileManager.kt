@@ -101,7 +101,7 @@ class ContainerFileManager(
 
     fun normalizeGuestPath(path: String): String {
         val raw = path.trim().ifBlank { "/root/pi_workspace" }.replace('\\', '/')
-        val absolute = if (raw.startsWith('/')) raw else "/root/pi_workspace/$raw"
+        val absolute = if (raw.startsWith('/')) raw else "${dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH}/$raw"
         val parts = mutableListOf<String>()
         absolute.split('/').forEach { part ->
             when {

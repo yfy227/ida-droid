@@ -425,7 +425,7 @@ fun SettingsScreen(
             item {
                 SettingsItem(
                     title = "恢复路径默认设置",
-                    subtitle = "/root/ida-pro-9.3，/root/pi_workspace",
+                    subtitle = "IDA Pro 与工作区路径配置",
                     icon = Icons.Default.Refresh,
                     onClick = { confirmEnvReset = true }
                 )
@@ -662,7 +662,7 @@ fun SettingsScreen(
         TextEditDialog(
             title = "初始工作目录", initialValue = terminal.initialCwd,
             label = "容器内路径",
-            helper = "例如 /root 或 /root/pi_workspace",
+            helper = "例如 /root 或 /root/pi_workspace（可自定义）",
             onDismiss = { editTerminalCwd = false },
             onSave = { value -> settingsStore.updateTerminalInitialCwd(value); editTerminalCwd = false }
         )
@@ -736,7 +736,7 @@ fun SettingsScreen(
         TextEditDialog(
             title = "Pi 工作区路径", initialValue = env.workspacePath,
             label = "容器内 pi 工作区路径",
-            helper = "默认 /root/pi_workspace",
+            helper = "默认 /root/pi_workspace，可改为 /sdcard/xxx 等外部路径",
             onDismiss = { editWorkspace = false },
             onSave = { value -> settingsStore.updateWorkspacePath(value); editWorkspace = false }
         )

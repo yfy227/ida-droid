@@ -47,7 +47,7 @@ class PiConfigManager(
             envText = JsonFormats.pretty.encodeToString(cfg.env),
             appendSystem = appendSystemFile.readTextOrDefault(defaultAppendSystemPrompt()),
             extraArgsText = cfg.extraArgs.joinToString("\n"),
-            materializedDir = "/root/pi_workspace/.idadroid/pi-agent",
+            materializedDir = "$workspacePath/.idadroid/pi-agent",
             modelCatalog = parseAgentModelCatalog(modelsText)
         )
     }
@@ -110,7 +110,7 @@ class PiConfigManager(
         {
           "quietStartup": true,
           "enableInstallTelemetry": false,
-          "sessionDir": "/root/pi_workspace/.pi-sessions",
+          "sessionDir": "$workspacePath/.pi-sessions",
           "compaction": {
             "enabled": true,
             "reserveTokens": 16384,
@@ -171,7 +171,7 @@ fun defaultSystemAppendPrompt(workspacePath: String = "/root/pi_workspace"): Str
 
 ### 文件传输桥 (idadroid-file)
 MCP 传输目录独立于工作区，专门用于快速把外部文件传进容器供 MCP/IDA 打开。
-别名: `alias idadroid-file='/root/pi_workspace/.idadroid/scripts/idadroid-file.sh'`
+别名: `alias idadroid-file='$workspacePath/.idadroid/scripts/idadroid-file.sh'`
 - `idadroid-file list` — 列出所有已上传文件
 - `idadroid-file find <name>` — 查找文件路径（模糊匹配）
 - `idadroid-file open <name>` — **自动搜索主机→传输进容器→mcpc打开**（一步到位）
@@ -192,14 +192,14 @@ agent 只需提供文件名，idadroid-file 会自动完成搜索、传输、打
 - 每个 CTF 挑战/分析任务在工作区下建独立子目录
 
 ## 深度索引模式 (Deep Index Mode)
-当用户开启深度索引模式时，可通过 `/root/pi_workspace/.idadroid/scripts/deep-index.sh` 使用统一工具链。
+当用户开启深度索引模式时，可通过 `$workspacePath/.idadroid/scripts/deep-index.sh` 使用统一工具链。
 它整合了 CodeGraph（代码图谱）、ECC（代码地图 + 安全 + onboarding）和 codebase-memory-mcp（持久记忆）:
-    alias deep-index='/root/pi_workspace/.idadroid/scripts/deep-index.sh'
+    alias deep-index='$workspacePath/.idadroid/scripts/deep-index.sh'
 运行 `deep-index help` 查看完整命令列表。典型工作流:
-  deep-index index /root/pi_workspace/<challenge>
-  deep-index codemap /root/pi_workspace/<challenge>
-  deep-index symbols /root/pi_workspace/<challenge>
-  deep-index security /root/pi_workspace/<challenge>
+  deep-index index $workspacePath/<challenge>
+  deep-index codemap $workspacePath/<challenge>
+  deep-index symbols $workspacePath/<challenge>
+  deep-index security $workspacePath/<challenge>
   deep-index memory-store <key> <insight>
 深度索引模式开启时，优先使用这些结构化工具而非原始 grep/find。
 

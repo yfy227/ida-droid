@@ -201,7 +201,7 @@ fun MainContent(
             visible = showFilePanel,
             fromStart = false,
             title = "文件浏览器",
-            subtitle = "管理 /root/pi_workspace 文件与导入 APK",
+            subtitle = "管理工作区文件与导入 APK",
             onClose = { showFilePanel = false }
         ) {
             HomeFileBrowserPanel(fileManager = fileManager)
@@ -607,7 +607,7 @@ private fun TerminalCommandButtons(onRunTerminalCommand: (String) -> Unit) {
         "whoami" to "whoami",
         "ls IDA" to "ls ~/ida-pro-9.3",
         "pi --version" to "pi --version",
-        "validate" to "/root/pi_workspace/.idadroid/scripts/validate.sh"
+        "validate" to "${dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH}/.idadroid/scripts/validate.sh"
     )
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         commands.chunked(2).forEach { row ->

@@ -929,7 +929,7 @@ private fun WorkspaceSidePane(
             title = { Text("导出容器文件到工作区") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("输入容器内文件的相对路径（相对于 /root/pi_workspace）：", fontSize = 13.sp)
+                    Text("输入容器内文件的相对路径（相对于工作区）：", fontSize = 13.sp)
                     OutlinedTextField(
                         value = exportPath,
                         onValueChange = { exportPath = it },
@@ -1238,7 +1238,7 @@ private fun WelcomePrompts(onPrompt: (String) -> Unit) {
     val prompts = listOf(
         "你好，请确认当前 IDAdroid 环境，并说明你能用哪些工具。" to "环境确认",
         "请先阅读 /root/ida-pro-9.3/IDA_MCP_MCPC_USAGE.md，然后告诉我如何连接当前 IDA。" to "IDA MCP",
-        "请列出 /root/pi_workspace 下的关键文件。" to "查看文件",
+        "请列出工作区下的关键文件。" to "查看文件",
         "请帮我分析附件内容，并给出下一步逆向计划。" to "分析附件"
     )
     ElevatedCard(Modifier.fillMaxWidth()) {

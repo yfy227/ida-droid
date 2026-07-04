@@ -122,7 +122,7 @@ data class PiConfigSnapshot(
     val envText: String = "{}",
     val appendSystem: String = "",
     val extraArgsText: String = "",
-    val materializedDir: String = "/root/pi_workspace/.idadroid/pi-agent",
+    val materializedDir: String = "",
     val modelCatalog: AgentModelCatalog = AgentModelCatalog()
 )
 

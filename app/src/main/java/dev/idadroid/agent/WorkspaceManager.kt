@@ -358,8 +358,8 @@ class WorkspaceManager(
     private fun resolveContainerPathToFile(containerPath: String): File? {
         val normalized = containerPath.replace('\\', '/').trim()
         val rel = when {
-            normalized.startsWith("/root/pi_workspace/") -> normalized.removePrefix("/root/pi_workspace/")
-            normalized == "/root/pi_workspace" -> ""
+            normalized.startsWith("${dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH}/") -> normalized.removePrefix("${dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH}/")
+            normalized == dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH -> ""
             normalized.startsWith("/root/") -> return File(paths.rootfsDir, normalized.trimStart('/'))
             normalized.startsWith("/") -> return File(paths.rootfsDir, normalized.trimStart('/'))
             else -> normalized

@@ -711,7 +711,7 @@ class PiAgentManager(
     private fun sessionFileToHostFile(sessionFile: String): File? {
         val normalized = sessionFile.replace('\\', '/').trim()
         val rel = when {
-            normalized.startsWith("/root/pi_workspace/") -> normalized.removePrefix("/root/pi_workspace/")
+            normalized.startsWith("$workspaceProotPath/") -> normalized.removePrefix("$workspaceProotPath/")
             normalized.startsWith("/root/") -> return File(paths.rootfsDir, normalized.trimStart('/'))
             normalized.startsWith("/") -> return File(paths.rootfsDir, normalized.trimStart('/'))
             else -> normalized

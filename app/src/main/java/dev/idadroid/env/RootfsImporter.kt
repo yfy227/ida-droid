@@ -136,7 +136,7 @@ class RootfsImporter(
                 }
                 report(ImportStage.Validating, 0.86f, validationMessage)
 
-                report(ImportStage.MaterializingWorkspace, 0.88f, "创建 /root/pi_workspace 与 IDAdroid 脚本")
+                report(ImportStage.MaterializingWorkspace, 0.88f, "创建工作区与 IDAdroid 脚本")
                 workspaceMaterializer.materialize(stagingRootfs)
 
                 val metadata = EnvironmentMetadata(

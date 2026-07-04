@@ -102,7 +102,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     val prefs = remember { context.getSharedPreferences("idadroid_file_browser", android.content.Context.MODE_PRIVATE) }
-    var path by remember { mutableStateOf(prefs.getString("path", "/root/pi_workspace") ?: "/root/pi_workspace") }
+    var path by remember { mutableStateOf(prefs.getString("path", dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH) ?: "/root/pi_workspace") }
     var bookmarks by remember {
         mutableStateOf(
             prefs.getStringSet("bookmarks", emptySet())
@@ -530,7 +530,7 @@ private fun HomeFileRow(entry: ContainerFileEntry, onOpen: () -> Unit, onMore: (
 
 private fun normalizeContainerFileBrowserPath(value: String): String {
     val raw = value.trim().ifBlank { "/root/pi_workspace" }.replace('\\', '/')
-    val absolute = if (raw.startsWith('/')) raw else "/root/pi_workspace/$raw"
+    val absolute = if (raw.startsWith('/')) raw else "${dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH}/$raw"
     val parts = mutableListOf<String>()
     absolute.split('/').forEach { part ->
         when {
