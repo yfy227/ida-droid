@@ -177,22 +177,25 @@ private fun parseConfig(modelsText: String, envText: String): ParsedConfig {
 
 private fun buildModelsJson(providers: List<ProviderConfig>): String {
     val json = Json { prettyPrint = true }
+    // 格式: { "providers": { "openai": { "baseURL":"...", "envKey":"...", "models":[...] } } }
     val providersObj = buildJsonObject {
-        providers.forEach { p ->
-            put(p.id, buildJsonObject {
-                if (p.baseUrl.isNotBlank()) put("baseURL", JsonPrimitive(p.baseUrl))
-                put("envKey", JsonPrimitive(p.envKey))
-                if (p.displayName != p.id) put("displayName", JsonPrimitive(p.displayName))
-                put("models", buildJsonArray {
-                    p.models.forEach { m ->
-                        add(buildJsonObject {
-                            put("id", JsonPrimitive(m.id))
-                            if (m.name.isNotBlank() && m.name != m.id) put("name", JsonPrimitive(m.name))
-                        })
-                    }
+        put("providers", buildJsonObject {
+            providers.forEach { p ->
+                put(p.id, buildJsonObject {
+                    if (p.baseUrl.isNotBlank()) put("baseURL", JsonPrimitive(p.baseUrl))
+                    put("envKey", JsonPrimitive(p.envKey))
+                    if (p.displayName != p.id) put("displayName", JsonPrimitive(p.displayName))
+                    put("models", buildJsonArray {
+                        p.models.forEach { m ->
+                            add(buildJsonObject {
+                                put("id", JsonPrimitive(m.id))
+                                if (m.name.isNotBlank() && m.name != m.id) put("name", JsonPrimitive(m.name))
+                            })
+                        }
+                    })
                 })
-            })
-        }
+            }
+        })
     }
     return json.encodeToString(JsonObject.serializer(), providersObj)
 }

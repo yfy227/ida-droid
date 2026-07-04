@@ -43,7 +43,7 @@ class AttachmentManager(
     private val workspaceProotPath: String get() = settings.envSettings.value.workspacePath.ifBlank { dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH }
     private val uploadHostDir: File get() {
         val ws = workspaceProotPath
-        val rel = ws.removePrefix("/").removePrefix("root/")
+        val rel = ws.removePrefix("/").ifBlank { "root/pi_workspace" }
         return File(paths.rootfsDir, "$rel/.upload")
     }
     private val uploadProotPath: String get() = "$workspaceProotPath/.upload"

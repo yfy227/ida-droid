@@ -7,7 +7,7 @@ import java.io.File
 
 class PiWorkspaceMaterializer {
     fun materialize(rootfsDir: File, workspacePath: String = "/root/pi_workspace") {
-        val wsRel = workspacePath.removePrefix("/").removePrefix("root/").ifBlank { "root/pi_workspace" }
+        val wsRel = workspacePath.removePrefix("/").ifBlank { "root/pi_workspace" }
         val workspace = File(rootfsDir, wsRel)
         val uploadDir = File(workspace, ".upload")
         val transferDir = File(rootfsDir, "root/.mcp-transfer")

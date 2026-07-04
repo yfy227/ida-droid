@@ -18,7 +18,7 @@ class PiConfigManager(
     private val settings = dev.idadroid.settings.IdaDroidSettings(appContext)
     /** 用户设置的工作区路径 (proot 内可见路径) */
     fun workspaceProotPath(): String = settings.envSettings.value.workspacePath.ifBlank { dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH }
-    private val workspace get() = File(paths.rootfsDir, workspaceProotPath().removePrefix("/").removePrefix("root/").ifBlank { "root/pi_workspace" })
+    private val workspace get() = File(paths.rootfsDir, workspaceProotPath().removePrefix("/").ifBlank { "root/pi_workspace" })
     private val idaDroidDir get() = File(workspace, ".idadroid")
     private val agentDir get() = File(idaDroidDir, "pi-agent")
     private val piDir get() = File(workspace, ".pi")
