@@ -107,7 +107,7 @@ private val PROVIDER_PRESETS = listOf(
     ProviderPreset("groq", "Groq", "https://api.groq.com/openai/v1", "GROQ_API_KEY", Color(0xFFF55036), "超低延迟推理"),
     ProviderPreset("xai", "xAI Grok", "https://api.x.ai/v1", "XAI_API_KEY", Color(0xFF000000), "Grok 系列"),
     ProviderPreset("together", "Together AI", "https://api.together.xyz/v1", "TOGETHER_API_KEY", Color(0xFF0F6FFF), "开源模型聚合"),
-    ProviderPreset("custom", "自定义", "", "CUSTOM_API_KEY", Color(0xFF6B7280), "手动填写 Base URL")
+    ProviderPreset("openai-generic", "自定义 (OpenAI 兼容)", "", "CUSTOM_API_KEY", Color(0xFF6B7280), "手动填写 Base URL，使用 OpenAI 兼容协议")
 )
 
 private val MODEL_SUGGESTIONS: Map<String, List<String>> = mapOf(
@@ -339,7 +339,7 @@ fun AiConfigEditor(
                     modifier = Modifier.fillMaxWidth()
                 )
                 // Key 格式校验提示
-                if (currentProvider.apiKey.isNotBlank() && currentProvider.id != "custom") {
+                if (currentProvider.apiKey.isNotBlank() && currentProvider.id != "openai-generic") {
                     if (!validateApiKeyFormat(currentProvider.id, currentProvider.apiKey)) {
                         Text("⚠️ API Key 格式可能不正确", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
                     }

@@ -171,7 +171,14 @@ class PiRpcRuntime(
         } else {
             append("--session-dir $ws/.pi-sessions ")
         }
-        session.provider?.takeIf { it.isNotBlank() }?.let { append("--provider ").append(IdaProotRuntime.shellQuote(it)).append(' ') }
+        session.provider?.takeIf { it.isNotBlank() }?.let { rawProvider ->
+            // "custom" 不是 pi 认识的 provider，映射为 openai-generic
+            val piProvider = when (rawProvider) {
+                "custom" -> "openai-generic"
+                else -> rawProvider
+            }
+            append("--provider ").append(IdaProotRuntime.shellQuote(piProvider)).append(' ')
+        }
         session.model?.takeIf { it.isNotBlank() }?.let { append("--model ").append(IdaProotRuntime.shellQuote(it)).append(' ') }
         session.thinkingLevel?.takeIf { it.isNotBlank() }?.let { append("--thinking ").append(IdaProotRuntime.shellQuote(it)).append(' ') }
         configManager.extraArgs().forEach { append(IdaProotRuntime.shellQuote(it)).append(' ') }
