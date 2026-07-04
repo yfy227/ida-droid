@@ -258,6 +258,13 @@ class PiAgentManager(
                             } else {
                                 throw e
                             }
+                        }.also {
+                            // 安全网：无论 prompt 成功还是超时，都确保 turnActive 被清除
+                            // 正常情况下 turn_end 事件会先到，这里只是防止事件丢失
+                            if (_state.value.turnActive) {
+                                finishStreamingFlush()
+                                setTurnActive(sessionId, false)
+                            }
                         }
                     }
                 }
