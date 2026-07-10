@@ -148,7 +148,18 @@ data class AgentUiState(
     val activeStats: SessionStats? = null,
     val activeQueue: QueueState = QueueState(),
     val piConfig: PiConfigSnapshot = PiConfigSnapshot(),
-    val workspace: WorkspaceState = WorkspaceState()
+    val workspace: WorkspaceState = WorkspaceState(),
+    /** 细粒度处理状态，参考 Operit 的 InputProcessingState 设计。
+     *  - null: 空闲
+     *  - "connecting": 正在连接 Agent 进程 / 发送 prompt
+     *  - "receiving": 已收到首个 delta，正在接收流式响应
+     *  - "executing_tool": 正在执行工具调用
+     *  - "compacting": 正在压缩上下文 */
+    val processingPhase: String? = null,
+    /** prompt 发送时间戳，用于计算等待时长 */
+    val promptSentAt: Long = 0L,
+    /** 首个 delta 到达时间戳 */
+    val firstDeltaAt: Long = 0L
 ) {
     val activeSession: AgentSessionRecord? get() = sessions.firstOrNull { it.id == activeSessionId }
     val activeSessionHasConfiguredModel: Boolean get() = activeSession?.let { !it.provider.isNullOrBlank() && !it.model.isNullOrBlank() } == true
@@ -158,6 +169,8 @@ data class AgentUiState(
     val canSend: Boolean get() = activeSessionId != null && canUseActiveSession && !isWorking && status != "starting"
     /** 当前正在流式输出的助手消息 ID（用于 UI 渲染闪烁游标）。 */
     val streamingMessageId: String? get() = if (isWorking) messages.lastOrNull { it.role == "assistant" }?.id else null
+    /** 等待时长（毫秒），从 prompt 发出到首个 delta 到达 */
+    val waitDurationMs: Long get() = if (promptSentAt > 0L && firstDeltaAt > 0L) firstDeltaAt - promptSentAt else 0L
 }
 
 sealed interface ChatAttachment {
