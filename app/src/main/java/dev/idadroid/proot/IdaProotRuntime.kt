@@ -103,6 +103,18 @@ class IdaProotRuntime(
         CommandResult(exitCode, stdout, stderr, timedOut = !finished)
     }
 
+    /** 便捷方法：执行单条命令，返回 stdout+stderr 合并文本 */
+    suspend fun executeCommandWithTimeout(command: String, timeoutMs: Long = 60_000): String = withContext(Dispatchers.IO) {
+        val result = run(command, timeoutMs)
+        if (result.timedOut) {
+            "错误: 命令超时 (${timeoutMs / 1000}s)\nstderr: ${result.stderr}"
+        } else if (result.exitCode != 0) {
+            "退出码: ${result.exitCode}\nstdout: ${result.stdout}\nstderr: ${result.stderr}"
+        } else {
+            result.stdout.ifBlank { result.stderr.ifBlank { "(无输出)" } }
+        }
+    }
+
     fun describe(spec: TerminalLaunchSpec): String = buildString {
         appendLine("cwd=${spec.workingDirectory}")
         appendLine("env=${spec.environment.joinToString(" ") { shellQuote(it) }}")
