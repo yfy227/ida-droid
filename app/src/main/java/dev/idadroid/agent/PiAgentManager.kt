@@ -21,11 +21,15 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlin.coroutines.coroutineContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.jsonPrimitive
 
 class PiAgentManager(
     context: Context,
@@ -53,7 +57,7 @@ class PiAgentManager(
     private val deepIndexToolChain = dev.idadroid.deepindex.DeepIndexToolChain(appContext, paths)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false; isLenient = true }
-    private val runtimes = mutableMapOf<String, PiRpcRuntime>()
+    private val runtimes = java.util.concurrent.ConcurrentHashMap<String, PiRpcRuntime>()
     private val rawLines = ArrayDeque<String>()
     // Send lock: prevents concurrent sendPrompt calls from racing. Operit uses
     // a similar coordination pattern in MessageCoordinationDelegate.
@@ -61,6 +65,25 @@ class PiAgentManager(
     @Volatile private var sendingInProgress = false
     /** 当主动 abort 上一轮对话时设为 true，收到 abort 错误事件后静默处理 */
     @Volatile private var suppressAbortError = false
+
+    // ==================== 新架构：分层对话引擎 ====================
+    // Layer 1 (ChatHttpClient) + Layer 2 (ToolEventBus) + Layer 3 (ConversationManager)
+    // 取代 pi --mode rpc 持久管道，直接用 HTTPS + function calling
+    private val conversationManager = ConversationManager(appContext, paths, dev.idadroid.proot.IdaProotRuntime(appContext, paths))
+    @Volatile private var currentSendJob: Job? = null
+
+    // ==================== ChatRuntime（参考 Operit）====================
+    // 每个 session 独立的 runtime，管理 sendJob 和首字节时间戳。
+    // abort 时 cancel sendJob，让 runtime.prompt() 内部的 deferred.await()
+    // 立即抛出 CancellationException，不再干等。
+    private data class ChatRuntime(
+        var sendJob: Job? = null,
+        var requestSentAt: Long = 0L,
+        var firstResponseElapsed: Long? = null
+    )
+    private val chatRuntimes = java.util.concurrent.ConcurrentHashMap<String, ChatRuntime>()
+    private fun runtimeFor(sessionId: String): ChatRuntime =
+        chatRuntimes[sessionId] ?: ChatRuntime().also { chatRuntimes[sessionId] = it }
 
     // ==================== 流式 delta 合并器 ====================
     // 高频 text_delta / thinking_delta 事件会以每秒数十~数百次的频率到达，
@@ -160,7 +183,8 @@ class PiAgentManager(
     fun deleteSession(id: String) {
         scope.launch {
             runCatching {
-                stopSessionInternal(id)
+                conversationManager.abort()
+                runtimes.remove(id)?.stop()
                 repo.deleteSession(id)
             }.onSuccess { refresh(createDefaultIfReady = true) }
                 .onFailure { error -> setError("删除 Session 失败：${error.message}") }
@@ -170,18 +194,20 @@ class PiAgentManager(
     fun startSession(id: String? = null) {
         scope.launch {
             val sessionId = id ?: _state.value.activeSessionId ?: createDefaultSessionWithConfiguredModel().id
-            runCatching { startSessionInternal(sessionId) }
-                .onSuccess { refreshRuntimeState(sessionId) }
-                .onFailure { error -> setError("启动 pi RPC 失败：${error.message}") }
+            // 新架构：不需要启动 pi 进程，只需更新状态
+            repo.updateRuntimeStatus(sessionId, "running", null)
+            _state.update { it.copy(status = "running", error = null, activeSessionId = sessionId, sessions = repo.listSessions(), activity = "就绪") }
         }
     }
 
     fun stopSession(id: String? = null) {
         scope.launch {
             val sessionId = id ?: _state.value.activeSessionId ?: return@launch
-            runCatching { stopSessionInternal(sessionId) }
-                .onSuccess { refresh() }
-                .onFailure { error -> setError("停止 pi RPC 失败：${error.message}") }
+            // 新架构：abort 当前对话 + 更新状态
+            conversationManager.abort()
+            repo.updateRuntimeStatus(sessionId, "idle", null)
+            _state.update { it.copy(status = "idle", turnActive = false, processingPhase = null, activity = "已停止") }
+            refresh()
         }
     }
 
@@ -211,9 +237,6 @@ class PiAgentManager(
         }
         val trimmed = text.trimEnd()
         if (trimmed.isBlank() && attachments.isEmpty()) return
-        // Acquire the send mutex so only one prompt flows through the RPC
-        // runtime at a time. If the user sends again while we're still
-        // attaching files or waiting for the runtime, the second call waits.
         sendMutex.withLock {
             try {
                 val session = repo.setActive(sessionId)
@@ -230,45 +253,43 @@ class PiAgentManager(
 
                 appendMessage(ChatMessage(newMessageId(), "user", displayMessage, System.currentTimeMillis(), attachments = displayAttachments))
                 setTurnActive(sessionId, true)
-                _state.update { it.copy(activity = "正在发送消息…") }
+                val promptStartTime = System.currentTimeMillis()
+                _state.update { it.copy(activity = "正在发送消息…", processingPhase = "connecting", promptSentAt = promptStartTime, firstDeltaAt = 0L) }
+
+                // ==================== 新架构路径 ====================
+                // 解析 API Key / Base URL / Model 从 PiConfigManager
+                val convConfig = resolveConvConfig(sessionId, session)
+                    ?: run {
+                        setTurnActive(sessionId, false)
+                        appendMessage(ChatMessage(newMessageId(), "system", "配置缺失：请先在设置中配置 API Key 和 Base URL", System.currentTimeMillis()))
+                        setError("配置缺失：请先在设置中配置 API Key 和 Base URL")
+                        return@withLock
+                    }
+
                 val expanded = attachmentManager.expandFileReferencesForPrompt(displayMessage, session.cwd)
-                val runtime = startSessionInternal(sessionId)
-                when (sendMode) {
-                    "steer" -> runtime.steer(expanded.message)
-                    "followUp" -> runtime.followUp(expanded.message)
-                    else -> {
-                        val wasWorking = _state.value.isWorking
-                        if (wasWorking) {
-                            // abort 上一轮——标记为"主动中断"，后续的 abort 错误事件应被静默
-                            suppressAbortError = true
-                            runCatching { runtime.abort() }
-                            // 等待短暂时间让 abort 生效，避免新 prompt 和 abort 竞争
-                            kotlinx.coroutines.delay(300)
-                        }
-                        // Wrap the prompt call with a timeout so a hung RPC
-                        // doesn't leave the UI stuck in "working" forever.
-                        runCatching {
-                            kotlinx.coroutines.withTimeout(PROMPT_TIMEOUT_MS) {
-                                runtime.prompt(expanded.message, expanded.images)
-                            }
-                        }.onFailure { e ->
-                            if (e is kotlinx.coroutines.TimeoutCancellationException) {
-                                appendMessage(ChatMessage(newMessageId(), "system", "发送超时，请检查 Agent 是否响应", System.currentTimeMillis()))
-                                runCatching { runtime.abort() }
-                            } else {
-                                throw e
-                            }
-                        }.also {
-                            // 安全网：无论 prompt 成功还是超时，都确保 turnActive 被清除
-                            // 正常情况下 turn_end 事件会先到，这里只是防止事件丢失
-                            if (_state.value.turnActive) {
-                                finishStreamingFlush()
-                                setTurnActive(sessionId, false)
-                            }
+                currentSendJob = coroutineContext[Job]
+
+                try {
+                    kotlinx.coroutines.withTimeout(PROMPT_TIMEOUT_MS) {
+                        conversationManager.send(expanded.message, expanded.images.map { it.data }, convConfig) { event ->
+                            handleConvEvent(sessionId, event, promptStartTime)
                         }
                     }
+                } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                    appendMessage(ChatMessage(newMessageId(), "system", "发送超时（3分钟无完成）", System.currentTimeMillis()))
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    android.util.Log.i("PiAgentManager", "Prompt cancelled by abort (sessionId=$sessionId)")
+                    throw e
+                } catch (e: Exception) {
+                    appendMessage(ChatMessage(newMessageId(), "system", "发送失败：${e.message}", System.currentTimeMillis()))
+                    setError("发送失败：${e.message}")
+                } finally {
+                    currentSendJob = null
+                    finishStreamingFlush()
+                    if (_state.value.turnActive) setTurnActive(sessionId, false)
                 }
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 setTurnActive(sessionId, false)
                 appendMessage(ChatMessage(newMessageId(), "system", "发送失败：${e.message}", System.currentTimeMillis()))
                 setError("发送失败：${e.message}")
@@ -279,13 +300,16 @@ class PiAgentManager(
     fun abort(id: String? = null) {
         scope.launch {
             val sessionId = id ?: _state.value.activeSessionId ?: return@launch
-            runCatching { runtimes[sessionId]?.abort() }
-                .onSuccess {
-                    setTurnActive(sessionId, false)
-                    repo.updateRuntimeStatus(sessionId, "running", null)
-                    refreshRuntimeState(sessionId)
-                }
-                .onFailure { error -> setError("中止失败：${error.message}") }
+            // 新架构：cancel sendJob 让 ConversationManager.send() 的流收集中断
+            currentSendJob?.let { job ->
+                job.cancel()
+                try { job.join() } catch (_: kotlinx.coroutines.CancellationException) {}
+            }
+            currentSendJob = null
+            conversationManager.abort()
+            finishStreamingFlush()
+            setTurnActive(sessionId, false)
+            repo.updateRuntimeStatus(sessionId, "running", null)
         }
     }
 
@@ -443,17 +467,12 @@ class PiAgentManager(
     fun loadSessionModels(force: Boolean = false) {
         scope.launch {
             if (_state.value.sessionModels.isNotEmpty() && !force) return@launch
-            val sessionId = _state.value.activeSessionId ?: createDefaultSessionWithConfiguredModel().id
             _state.update { it.copy(modelLoading = true) }
             runCatching {
-                val runtime = startSessionInternal(sessionId)
-                val data = runtime.availableModels()
-                ((data as? JsonObject)?.get("models") as? JsonArray).orEmpty().mapNotNull { item ->
-                    runCatching { json.decodeFromJsonElement<PiModel>(item) }.getOrNull()
-                }
+                // 新架构：直接从 config 读模型列表，不需要 pi agent
+                configManager.readSnapshot().modelCatalog.models.map { it.toPiModel() }
             }.onSuccess { models ->
-                val fallback = configManager.readSnapshot().modelCatalog.models.map { it.toPiModel() }
-                _state.update { it.copy(sessionModels = mergeModels(models, fallback), modelLoading = false) }
+                _state.update { it.copy(sessionModels = models, modelLoading = false) }
             }.onFailure { error ->
                 val fallback = configManager.readSnapshot().modelCatalog.models.map { it.toPiModel() }
                 _state.update { it.copy(sessionModels = fallback, modelLoading = false) }
@@ -464,7 +483,7 @@ class PiAgentManager(
 
     fun setSessionModel(model: PiModel) {
         val rawProvider = model.providerNameOrNull() ?: return setError("模型缺少 provider")
-        // pi agent 不认识 "openai-generic"，映射为 "openai"
+        // 新架构：provider 映射保留用于 session 存储一致性
         val provider = when (rawProvider) {
             "custom", "openai-generic" -> "openai"
             else -> rawProvider
@@ -472,12 +491,10 @@ class PiAgentManager(
         scope.launch {
             val sessionId = _state.value.activeSessionId ?: return@launch
             runCatching {
-                val runtime = runtimes[sessionId]?.takeIf { it.isActive() }
-                if (runtime != null) runtime.setModel(provider, model.id)
+                // 新架构：不需要 runtime.setModel()，下次 sendPrompt 会用新 config
                 repo.patchSession(sessionId) { it.copy(provider = provider, model = model.id, lastActiveAt = Instant.now().toString()) }
-            }.onSuccess {
-                if (runtimes[sessionId]?.isActive() == true) refreshRuntimeState(sessionId) else refresh()
-            }.onFailure { error -> setError("切换模型失败：${error.message}") }
+            }.onSuccess { refresh() }
+                .onFailure { error -> setError("切换模型失败：${error.message}") }
         }
     }
 
@@ -490,10 +507,9 @@ class PiAgentManager(
         scope.launch {
             val sessionId = _state.value.activeSessionId ?: return@launch
             runCatching {
-                val runtime = startSessionInternal(sessionId)
-                runtime.setThinkingLevel(level)
+                // 新架构：thinking level 存在 session 里，下次 sendPrompt 时传给 ConvConfig
                 repo.patchSession(sessionId) { it.copy(thinkingLevel = level, lastActiveAt = Instant.now().toString()) }
-            }.onSuccess { refreshRuntimeState(sessionId) }
+            }.onSuccess { refresh() }
                 .onFailure { error -> setError("切换 Thinking 失败：${error.message}") }
         }
     }
@@ -502,21 +518,21 @@ class PiAgentManager(
         scope.launch {
             val sessionId = _state.value.activeSessionId ?: return@launch
             runCatching {
-                val runtime = startSessionInternal(sessionId)
-                runtime.setAutoCompaction(enabled)
+                // 新架构：auto compaction 由 ConversationManager 的 maxToolRounds 控制
                 repo.patchSession(sessionId) { it.copy(autoCompactionEnabled = enabled, lastActiveAt = Instant.now().toString()) }
-            }.onSuccess { refreshRuntimeState(sessionId) }
+            }.onSuccess { refresh() }
                 .onFailure { error -> setError("切换 Compact 失败：${error.message}") }
         }
     }
 
     fun compact(customInstructions: String? = null) {
+        // 新架构：上下文压缩不再是 pi agent 的功能
+        // 可以通过截断消息历史实现简单版本
         scope.launch {
             val sessionId = _state.value.activeSessionId ?: return@launch
-            runCatching {
-                appendMessage(ChatMessage(newMessageId(), "system", if (customInstructions.isNullOrBlank()) "已触发手动上下文压缩。" else "已触发手动上下文压缩：$customInstructions", System.currentTimeMillis()))
-                startSessionInternal(sessionId).compact(customInstructions)
-            }.onFailure { error -> setError("Compact 失败：${error.message}") }
+            appendMessage(ChatMessage(newMessageId(), "system", if (customInstructions.isNullOrBlank()) "已触发手动上下文压缩。" else "已触发手动上下文压缩：$customInstructions", System.currentTimeMillis()))
+            conversationManager.reset()
+            refresh()
         }
     }
 
@@ -665,52 +681,43 @@ class PiAgentManager(
     }
 
     private suspend fun stopSessionInternal(sessionId: String) {
+        // 参考 Operit：cancel sendJob 让正在进行的 prompt 立即返回
+        val chatRuntime = runtimeFor(sessionId)
+        val sendJob = chatRuntime.sendJob
+        chatRuntime.sendJob = null
+        if (sendJob != null) {
+            sendJob.cancel()
+            try { sendJob.join() } catch (_: kotlinx.coroutines.CancellationException) {}
+        }
+        chatRuntimes.remove(sessionId)
         runtimes.remove(sessionId)?.stop()
         repo.updateRuntimeStatus(sessionId, "stopped", null)
     }
 
     private suspend fun refreshRuntimeState(sessionId: String) {
-        try {
-            refreshRuntimeStateInternal(sessionId)
-        } catch (e: Exception) {
-            android.util.Log.e("PiAgentManager", "refreshRuntimeState failed for $sessionId", e)
-        }
+        // 新架构：不依赖 pi agent runtime state，只需 refresh
+        refresh()
     }
 
-    private suspend fun refreshRuntimeStateInternal(sessionId: String) {
-        val runtime = runtimes[sessionId]?.takeIf { it.isActive() } ?: run {
-            refresh()
-            return
-        }
-        val state = runCatching { runtime.getState(timeoutMs = 30_000) }.getOrNull()
-        val obj = state as? JsonObject
-        val sessionFile = obj?.string("sessionFile")
-        if (!sessionFile.isNullOrBlank()) repo.setSessionFile(sessionId, sessionFile)
-        val stats = runCatching { json.decodeFromJsonElement<SessionStats>(runtime.getStats()) }.getOrNull()
-        if (obj != null) {
-            val modelObj = obj.obj("model")
-            repo.patchSession(sessionId) { session ->
-                session.copy(
-                    status = if (session.status == "starting") "running" else session.status,
-                    provider = modelObj?.string("provider") ?: modelObj?.string("providerId") ?: modelObj?.string("providerName") ?: session.provider,
-                    model = modelObj?.string("id") ?: session.model,
-                    thinkingLevel = obj.string("thinkingLevel") ?: session.thinkingLevel,
-                    autoCompactionEnabled = obj.boolean("autoCompactionEnabled") ?: session.autoCompactionEnabled,
-                    lastActiveAt = Instant.now().toString()
-                )
-            }
-        }
-        refresh()
-        _state.update { it.copy(activeStats = stats ?: it.activeStats) }
-    }
+    private fun newMessageId(): String = java.util.UUID.randomUUID().toString()
 
     private suspend fun loadMessagesInternal(sessionId: String): List<ChatMessage> {
-        val runtime = runtimes[sessionId]?.takeIf { it.isActive() }
-        if (runtime != null) {
-            val data = runCatching { runtime.getMessages() }.getOrNull()
-            val messages = ((data as? JsonObject)?.get("messages") as? JsonArray)?.toList().orEmpty()
-            if (messages.isNotEmpty()) return normalizePiMessages(messages)
+        // 新架构：从 ConversationManager 获取当前消息
+        val convMessages = conversationManager.getMessages()
+        if (convMessages.isNotEmpty()) {
+            return convMessages.mapNotNull { msg ->
+                when (msg.role) {
+                    "user" -> ChatMessage(newMessageId(), "user", msg.content ?: "", System.currentTimeMillis())
+                    "assistant" -> ChatMessage(newMessageId(), "assistant", msg.content ?: "", System.currentTimeMillis())
+                    "tool" -> ChatMessage(newMessageId(), "tool", msg.content ?: "", System.currentTimeMillis(),
+                        toolCallId = msg.toolCallId, toolName = msg.name, toolResult = msg.content, toolStatus = "done"
+                    )
+                    "system" -> ChatMessage(newMessageId(), "system", msg.content ?: "", System.currentTimeMillis())
+                    else -> null
+                }
+            }
         }
+        // 回退：从 session file 读取（旧数据兼容）
         val session = repo.listSessions().firstOrNull { it.id == sessionId } ?: return emptyList()
         val file = session.sessionFile?.let(::sessionFileToHostFile)?.takeIf { it.isFile } ?: return emptyList()
         val messages = file.readLines().mapNotNull { line ->
@@ -741,13 +748,24 @@ class PiAgentManager(
                 val next = (_state.value.stderrTail + event.text).takeLast(12_000)
                 _state.update { it.copy(stderrTail = next) }
             }
-            is PiRuntimeEvent.RawStdout -> appendRaw("stdout: ${event.line}")
+            is PiRuntimeEvent.RawStdout -> {
+                appendRaw("stdout: ${event.line}")
+            }
             is PiRuntimeEvent.Exited -> {
                 val wasWorking = _state.value.turnActive
                 val stderrTail = _state.value.stderrTail.trim().takeLast(500)
                 val errorMsg = event.error ?: if (stderrTail.isNotBlank()) "Agent 进程退出\nstderr:\n$stderrTail" else "Agent 进程退出"
                 repo.updateRuntimeStatus(sessionId, "error", errorMsg)
-                _state.update { it.copy(status = "error", error = errorMsg, turnActive = false, sessions = repo.listSessions()) }
+                _state.update { it.copy(status = "error", error = errorMsg, turnActive = false, sessions = repo.listSessions(), processingPhase = null, promptSentAt = 0L, firstDeltaAt = 0L) }
+                // 参考 Operit：进程退出时 cancel sendJob
+                val chatRuntime = runtimeFor(sessionId)
+                val sendJob = chatRuntime.sendJob
+                chatRuntime.sendJob = null
+                chatRuntimes.remove(sessionId)
+                if (sendJob != null) {
+                    sendJob.cancel()
+                    try { sendJob.join() } catch (_: kotlinx.coroutines.CancellationException) {}
+                }
                 if (wasWorking) {
                     appendMessage(ChatMessage(newMessageId(), "system", "Agent 报错：$errorMsg", System.currentTimeMillis()))
                 }
@@ -758,19 +776,25 @@ class PiAgentManager(
 
     private suspend fun handleAgentEvent(sessionId: String, event: JsonObject) {
         when (event.string("type")) {
-            "agent_start", "turn_start", "message_start" -> setTurnActive(sessionId, true)
+            "agent_start", "turn_start", "message_start" -> {
+                setTurnActive(sessionId, true)
+                _state.update { it.copy(processingPhase = "connecting") }
+            }
             "agent_end", "turn_end" -> {
                 setTurnActive(sessionId, false)
+                _state.update { it.copy(processingPhase = null, promptSentAt = 0L, firstDeltaAt = 0L) }
                 refreshRuntimeState(sessionId)
             }
             "message_end" -> {
                 setTurnActive(sessionId, false)
+                _state.update { it.copy(processingPhase = null, promptSentAt = 0L, firstDeltaAt = 0L) }
                 appendAssistantError(event.obj("message"))
                 refreshRuntimeState(sessionId)
             }
             "message_update" -> handleMessageUpdate(sessionId, event.obj("assistantMessageEvent") ?: return)
             "tool_execution_start" -> {
                 setTurnActive(sessionId, true)
+                _state.update { it.copy(processingPhase = "executing_tool") }
                 upsertTool(
                     toolCallId = event.string("toolCallId") ?: "${event.string("toolName")}-${System.currentTimeMillis()}",
                     name = event.string("toolName") ?: "tool",
@@ -801,6 +825,7 @@ class PiAgentManager(
             }
             "compaction_start" -> {
                 setTurnActive(sessionId, true)
+                _state.update { it.copy(processingPhase = "compacting") }
                 appendMessage(ChatMessage(newMessageId(), "system", "正在压缩上下文：${event.string("reason") ?: "manual"}", System.currentTimeMillis()))
             }
             "compaction_end" -> {
@@ -838,9 +863,23 @@ class PiAgentManager(
 
     private fun handleMessageUpdate(sessionId: String, delta: JsonObject) {
         when (delta.string("type")) {
-            "start", "text_start", "thinking_start", "reasoning_start" -> setTurnActive(sessionId, true)
-            "text_delta" -> applyAssistantDeltas(textDelta = delta.string("delta") ?: delta.string("text") ?: "", thinkingDelta = "")
-            "thinking_delta", "reasoning_delta" -> applyAssistantDeltas(textDelta = "", thinkingDelta = delta.string("delta") ?: delta.string("text") ?: "")
+            "start", "text_start", "thinking_start", "reasoning_start" -> {
+                setTurnActive(sessionId, true)
+                _state.update { it.copy(processingPhase = "connecting") }
+            }
+            "text_delta" -> {
+                // 首个 delta 到达：切换到 receiving 状态，记录时间戳
+                if (_state.value.firstDeltaAt == 0L) {
+                    _state.update { it.copy(processingPhase = "receiving", firstDeltaAt = System.currentTimeMillis()) }
+                }
+                applyAssistantDeltas(textDelta = delta.string("delta") ?: delta.string("text") ?: "", thinkingDelta = "")
+            }
+            "thinking_delta", "reasoning_delta" -> {
+                if (_state.value.firstDeltaAt == 0L) {
+                    _state.update { it.copy(processingPhase = "receiving", firstDeltaAt = System.currentTimeMillis()) }
+                }
+                applyAssistantDeltas(textDelta = "", thinkingDelta = delta.string("delta") ?: delta.string("text") ?: "")
+            }
             "toolcall_start", "toolcall_delta", "toolcall_end" -> {
                 setTurnActive(sessionId, true)
                 val tool = toolCallFromDelta(delta)
@@ -863,7 +902,14 @@ class PiAgentManager(
             finishStreamingFlush()
         }
         repo.updateRuntimeStatus(sessionId, if (active) "working" else "running", null)
-        _state.update { it.copy(turnActive = active, status = if (active) "working" else "running", sessions = repo.listSessions()) }
+        _state.update { it.copy(
+            turnActive = active,
+            status = if (active) "working" else "running",
+            sessions = repo.listSessions(),
+            processingPhase = if (active) it.processingPhase else null,
+            promptSentAt = if (active) it.promptSentAt else 0L,
+            firstDeltaAt = if (active) it.firstDeltaAt else 0L
+        ) }
     }
 
     private fun appendMessage(message: ChatMessage) {
@@ -972,7 +1018,113 @@ class PiAgentManager(
     }
 
     private fun setError(message: String) {
-        _state.update { it.copy(error = message, activity = message, status = "error", turnActive = false) }
+        _state.update { it.copy(error = message, activity = message, status = "error", turnActive = false, processingPhase = null, promptSentAt = 0L, firstDeltaAt = 0L) }
+    }
+
+    // ==================== 新架构：配置解析 + 事件映射 ====================
+
+    /**
+     * 从 PiConfigManager 解析出 ConversationManager 需要的配置。
+     * 读取 API Key、Base URL、Model、System Prompt。
+     */
+    private suspend fun resolveConvConfig(sessionId: String, session: AgentSessionRecord): ConversationManager.ConvConfig? {
+        val snapshot = configManager.readSnapshot()
+        val userConfig = configManager.readUserConfig()
+
+        // Provider 映射
+        val rawProvider = (session.provider ?: snapshot.defaultProvider).trim()
+        val providerId = when (rawProvider) {
+            "custom", "openai-generic" -> "openai-generic"
+            else -> rawProvider
+        }.ifBlank { return null }
+
+        // 从 env 中找 API Key
+        val apiKey = userConfig.env.entries.firstOrNull { (_, v) -> v.isNotBlank() }?.value
+            ?: return null
+
+        // 从 models.json 找 Base URL
+        val modelsObj = runCatching {
+            dev.idadroid.util.JsonFormats.pretty.parseToJsonElement(snapshot.modelsText).let {
+                (it as? JsonObject)?.get("providers") as? JsonObject
+            }
+        }.getOrNull()
+        val providerObj = modelsObj?.get(providerId) as? JsonObject
+        val baseUrl = providerObj?.get("baseURL")?.jsonPrimitive?.contentOrNull
+            ?: providerObj?.get("baseUrl")?.jsonPrimitive?.contentOrNull
+            ?: when (providerId) {
+                "openai" -> "https://api.openai.com/v1"
+                "deepseek" -> "https://api.deepseek.com/v1"
+                "anthropic" -> "https://api.anthropic.com/v1"
+                else -> return null
+            }
+
+        val model = (session.model ?: snapshot.defaultModel).trim().ifBlank { return null }
+        val thinkingLevel = session.thinkingLevel ?: snapshot.defaultThinkingLevel.trim().takeIf { it.isNotBlank() }
+        val systemPrompt = snapshot.appendSystem.ifBlank { defaultSystemAppendPrompt(workspaceProotPath) }
+
+        return ConversationManager.ConvConfig(
+            baseUrl = baseUrl,
+            apiKey = apiKey,
+            model = model,
+            systemPrompt = systemPrompt,
+            thinkingLevel = thinkingLevel
+        )
+    }
+
+    /**
+     * 将 ConvEvent 映射到现有 UI 状态更新。
+     * 复用 pendingTextDelta / pendingThinkingDelta / upsertTool 等现有机制。
+     */
+    private fun handleConvEvent(sessionId: String, event: ConversationManager.ConvEvent, promptStartTime: Long) {
+        when (event) {
+            is ConversationManager.ConvEvent.TextDelta -> {
+                if (_state.value.firstDeltaAt == 0L) {
+                    _state.update { it.copy(firstDeltaAt = System.currentTimeMillis(), processingPhase = "receiving") }
+                }
+                applyAssistantDeltas(textDelta = event.text, thinkingDelta = "")
+            }
+            is ConversationManager.ConvEvent.ThinkingDelta -> {
+                if (_state.value.firstDeltaAt == 0L) {
+                    _state.update { it.copy(firstDeltaAt = System.currentTimeMillis(), processingPhase = "receiving") }
+                }
+                applyAssistantDeltas(textDelta = "", thinkingDelta = event.text)
+            }
+            is ConversationManager.ConvEvent.ToolCallStart -> {
+                finishStreamingFlush()
+                _state.update { it.copy(processingPhase = "executing_tool") }
+                upsertTool(
+                    toolCallId = "${event.toolName}-${System.currentTimeMillis()}",
+                    name = event.toolName,
+                    args = runCatching { json.parseToJsonElement(event.args) }.getOrNull(),
+                    result = null,
+                    resultMeta = null,
+                    status = "running"
+                )
+            }
+            is ConversationManager.ConvEvent.ToolCallResult -> {
+                upsertTool(
+                    toolCallId = "${event.toolName}-${System.currentTimeMillis()}",
+                    name = event.toolName,
+                    args = null,
+                    result = event.result,
+                    resultMeta = null,
+                    status = if (event.success) "done" else "error"
+                )
+                _state.update { it.copy(processingPhase = "connecting") }
+            }
+            is ConversationManager.ConvEvent.PhaseChange -> {
+                _state.update { it.copy(processingPhase = event.phase) }
+            }
+            is ConversationManager.ConvEvent.Error -> {
+                appendSystemError(event.message)
+            }
+            ConversationManager.ConvEvent.TurnEnd -> {
+                finishStreamingFlush()
+                setTurnActive(sessionId, false)
+                repo.updateRuntimeStatus(sessionId, "running", null)
+                _state.update { it.copy(processingPhase = null, promptSentAt = 0L, firstDeltaAt = 0L) }
+            }
+        }
     }
 
     private fun workspaceFile(path: String): File {
@@ -1068,6 +1220,6 @@ class PiAgentManager(
         /** 流式 delta 合并 flush 节拍，约 30fps：兼顾逐字流式的视觉流畅与状态更新开销。 */
         const val STREAM_FLUSH_INTERVAL_MS = 33L
         /** 单次 prompt 调用的超时时间。超过后中止并提示用户，避免 UI 永久卡在 working 状态。 */
-        const val PROMPT_TIMEOUT_MS = 600_000L // 10 分钟
+        const val PROMPT_TIMEOUT_MS = 180_000L // 3 分钟
     }
 }
