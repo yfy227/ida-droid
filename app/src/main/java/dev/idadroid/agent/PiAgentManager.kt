@@ -530,7 +530,7 @@ class PiAgentManager(
             val summary = buildString {
                 append("[上下文压缩]\n")
                 append("已压缩 ${toSummarize.size} 条早期消息。\n")
-                if (customInstructions.isNotBlank()) {
+                if (!customInstructions.isNullOrBlank()) {
                     append("用户指示：$customInstructions\n")
                 }
                 append("\n压缩前的关键内容摘要：\n")

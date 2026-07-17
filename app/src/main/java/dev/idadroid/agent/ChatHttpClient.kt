@@ -323,7 +323,6 @@ class ChatHttpClient(
                 val sseBuffer = StringBuilder()
 
                 while (true) {
-                    kotlinx.coroutines.coroutineScope { ensureActive() }
                     val line = reader.readLine() ?: break
 
                     // SSE 协议：空行表示一个 event 结束
