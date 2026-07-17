@@ -105,13 +105,32 @@ class IdaProotRuntime(
 
     /** 便捷方法：执行单条命令，返回 stdout+stderr 合并文本 */
     suspend fun executeCommandWithTimeout(command: String, timeoutMs: Long = 60_000): String = withContext(Dispatchers.IO) {
-        val result = run(command, timeoutMs)
-        if (result.timedOut) {
-            "错误: 命令超时 (${timeoutMs / 1000}s)\nstderr: ${result.stderr}"
-        } else if (result.exitCode != 0) {
-            "退出码: ${result.exitCode}\nstdout: ${result.stdout}\nstderr: ${result.stderr}"
+        // 使用 workspaceCommandSpec 确保命令在工作区目录执行
+        val spec = workspaceCommandSpec(command)
+        val processBuilder = ProcessBuilder(spec.command)
+            .directory(spec.workingDirectory)
+        processBuilder.environment().putAll(spec.environment)
+
+        val process = processBuilder.start()
+        val executor = Executors.newFixedThreadPool(2)
+        val stdoutFuture = executor.submit<String> { process.inputStream.bufferedReader().use { it.readText() } }
+        val stderrFuture = executor.submit<String> { process.errorStream.bufferedReader().use { it.readText() } }
+
+        val finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
+        if (!finished) {
+            process.destroy()
+            if (!process.waitFor(1500, TimeUnit.MILLISECONDS)) process.destroyForcibly()
+        }
+        val exitCode = if (finished) process.exitValue() else -1
+        val stdout = runCatching { stdoutFuture.get(2, TimeUnit.SECONDS) }.getOrDefault("")
+        val stderr = runCatching { stderrFuture.get(2, TimeUnit.SECONDS) }.getOrDefault("")
+        executor.shutdownNow()
+        if (!finished) {
+            "错误: 命令超时 (${timeoutMs / 1000}s)\nstderr: $stderr"
+        } else if (exitCode != 0) {
+            "退出码: $exitCode\nstdout: $stdout\nstderr: $stderr"
         } else {
-            result.stdout.ifBlank { result.stderr.ifBlank { "(无输出)" } }
+            stdout.ifBlank { stderr.ifBlank { "(无输出)" } }
         }
     }
 

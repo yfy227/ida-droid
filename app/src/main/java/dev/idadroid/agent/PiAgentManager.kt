@@ -254,7 +254,10 @@ class PiAgentManager(
 
                 try {
                     kotlinx.coroutines.withTimeout(PROMPT_TIMEOUT_MS) {
-                        conversationManager.send(expanded.message, expanded.images.map { it.data }, convConfig) { event ->
+                        val imageUris = expanded.images.map { img ->
+                            "data:${img.mimeType};base64,${img.data}"
+                        }
+                        conversationManager.send(expanded.message, imageUris, convConfig) { event ->
                             handleConvEvent(sessionId, event, promptStartTime)
                         }
                     }

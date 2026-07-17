@@ -287,8 +287,10 @@ class ChatHttpClient(
             }
         })
         put("stream", true)
-        // stream_options: 请求 usage 统计
-        put("stream_options", buildJsonObject { put("include_usage", true) })
+        // stream_options: 请求 usage 统计（部分 API 不支持，仅对已知兼容的 provider 添加）
+        if (providerId !in listOf("anthropic", "moonshot")) {
+            put("stream_options", buildJsonObject { put("include_usage", true) })
+        }
         if (tools.isNotEmpty()) {
             put("tools", buildJsonArray {
                 tools.forEach { tool ->
@@ -303,9 +305,12 @@ class ChatHttpClient(
                 }
             })
         }
+        // reasoning_effort 仅对支持思考的模型添加（OpenAI o系列、DeepSeek R1等）
+        // 大多数 OpenAI 兼容 API 不认识此字段会返回 400
         thinkingLevel?.takeIf { it.isNotBlank() }?.let {
-            // 部分 OpenAI 兼容 API 通过额外字段支持思考
-            put("reasoning_effort", it)
+            if (providerId in listOf("openai-generic", "deepseek")) {
+                put("reasoning_effort", it)
+            }
         }
         temperature?.let { put("temperature", it) }
         maxTokens?.let { put("max_tokens", it) }

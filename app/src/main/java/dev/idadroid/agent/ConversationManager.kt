@@ -218,7 +218,9 @@ class ConversationManager(
             ))
 
             // 如果没有工具调用，对话结束
-            if (finishToolCalls.isEmpty() || finishReason == "stop") {
+            // 注意: 部分API返回 finishReason="stop" 同时携带 tool_calls，
+            // 此时应该执行工具，而不是结束对话。
+            if (finishToolCalls.isEmpty()) {
                 onEvent(ConvEvent.PhaseChange(null))
                 onEvent(ConvEvent.TurnEnd)
                 return
