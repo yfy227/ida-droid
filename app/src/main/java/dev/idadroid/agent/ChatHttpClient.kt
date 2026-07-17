@@ -148,9 +148,10 @@ class ChatHttpClient(
         for (attempt in 1..MAX_RETRIES) {
             var shouldRetry = false
             var retryReason = ""
+            var connection: HttpURLConnection? = null
 
             try {
-                val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                connection = (URL(url).openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
                     connectTimeout = 30_000
                     readTimeout = 300_000  // 5 分钟读超时（流式模式不会真的等这么久）
@@ -178,18 +179,15 @@ class ChatHttpClient(
                             retryDelay = (retryAfter * 1000L).coerceAtMost(MAX_RETRY_DELAY_MS)
                         }
                     }
-                    connection.disconnect()
                 } else {
                     // SSE 流式读取
-                    val streamResult = readSSEStream(connection)
+                    val streamResult = readSSEStream(connection!!)
                     var hasEmitted = false
 
                     streamResult.events.forEach { event ->
                         emit(event)
                         hasEmitted = true
                     }
-
-                    connection.disconnect()
 
                     // 如果流正常结束（收到 Finish 或 Error），不重试
                     if (hasEmitted) return@flow
@@ -212,6 +210,8 @@ class ChatHttpClient(
                     shouldRetry = true
                     retryReason = e.javaClass.simpleName
                 }
+            } finally {
+                connection?.disconnect()
             }
 
             if (shouldRetry) {

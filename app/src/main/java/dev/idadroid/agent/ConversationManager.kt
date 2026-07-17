@@ -204,6 +204,14 @@ class ConversationManager(
             }
 
             if (errorMessage != null) {
+                // 先保存已收到的部分文本（如果有）
+                if (textBuffer.isNotEmpty()) {
+                    conv.messages.add(ChatHttpClient.ChatMessageDto(
+                        role = "assistant",
+                        content = textBuffer.toString(),
+                        toolCalls = finishToolCalls
+                    ))
+                }
                 onEvent(ConvEvent.Error(errorMessage!!))
                 onEvent(ConvEvent.PhaseChange(null))
                 onEvent(ConvEvent.TurnEnd)
