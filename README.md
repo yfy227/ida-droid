@@ -1,6 +1,6 @@
 # IDAdroid — Android 端 IDA Pro 逆向工程 + AI Agent 平台
 
-IDAdroid 将完整的 IDA Pro 逆向工程环境、ida-mcp 工具链和 AI Agent（pi coding agent）集成到 Android 设备上，通过 proot 运行 Linux rootfs，实现无需 root 的移动端逆向分析体验。
+IDAdroid 将完整的 IDA Pro 逆向工程环境、ida-mcp 工具链和 AI Agent 集成到 Android 设备上，通过 proot 运行 Linux rootfs，实现无需 root 的移动端逆向分析体验。
 
 ## 核心功能
 
@@ -11,30 +11,36 @@ IDAdroid 将完整的 IDA Pro 逆向工程环境、ida-mcp 工具链和 AI Agent
 在同一 rootfs 中提供交互式 shell，支持完整的 Linux 命令行工具链。
 
 ### 3. AI Agent 聊天
-集成 pi coding agent（`--mode rpc`），支持：
-- 流式对话、思考过程展示
-- 多模型/多 Provider 配置（OpenAI、Anthropic、DeepSeek、Google Gemini、通义千问、豆包等 16+ 平台）
+自研三层对话引擎（ChatHttpClient + ToolEventBus + ConversationManager），支持：
+- **流式对话** — SSE 实时流式输出，30fps flush 节拍
+- **思考过程展示** — 支持 DeepSeek-R1、Claude、o1 等推理模型
+- **多 Provider 支持** — OpenAI、Anthropic、DeepSeek、Google Gemini、通义千问、豆包等 16+ 平台
 - **智能模型推荐** — 每个 Provider 附带常用模型列表，一键添加
 - **API 连接测试** — 配置后可一键验证 API Key + 端点可用性
 - **模型列表拉取** — 从 Provider API 动态获取可用模型列表
 - **配置导入导出** — 完整 AI 配置可导出为 JSON 备份，支持导入恢复
 - **API Key 格式校验** — 输入时即时检查 Key 前缀和长度
 - **端点自动补全** — 裸域名自动追加 `/v1/chat/completions`，Anthropic 自动追加 `/v1/messages`
-- 附件上传（图片/文件），自动传输到容器
-- Session 管理、上下文压缩
-- 通过 `mcpc` / `ida-mcp` 操作 IDA 进行自动化逆向
-- 深度索引模式（CodeGraph + ECC + codebase-memory）
-- Android 主机 ⇄ 容器文件传输桥
-- **智能工作流** — Agent 根据请求类型自适应选择工具链和分析深度
+- **网络重试** — 指数退避重试（429/5xx，最多 3 次），适合移动网络环境
+- **上下文管理** — Token 估算 + 自动截断 + 手动压缩
+- **并行工具调用** — 多工具调用时并行执行，提升效率
+- **工具调用超时保护** — 单工具 120s 超时，防止对话阻塞
+- **附件上传** — 图片/文件自动传输到容器
+- **Session 管理** — 创建/切换/删除/重命名，持久化存储
+- **深度索引模式** — CodeGraph + ECC + codebase-memory 联动分析
+- **文件传输桥** — Android 主机 ⇄ 容器文件传输
 
 ## 技术架构
 
 ```
 Android App (Kotlin / Jetpack Compose / Material 3)
+├── AI 对话引擎 (三层分层)
+│   ├── Layer 1: ChatHttpClient — HTTPS SSE 流式对话
+│   ├── Layer 2: ToolEventBus — 工具执行总线
+│   └── Layer 3: ConversationManager — 对话编排器
 ├── proot rootfs (完整 Linux 环境)
 │   ├── IDA Pro 9.3
 │   ├── ida-mcp (MCP server for IDA)
-│   ├── pi coding agent (--mode rpc)
 │   ├── jadx / python / npm
 │   └── .idadroid/ (配置、脚本、日志)
 ├── terminal-emulator (Termux 终端模拟器)
@@ -50,22 +56,22 @@ Android App (Kotlin / Jetpack Compose / Material 3)
 | `terminal-emulator/` | Termux 终端模拟器库 |
 | `terminal-view/` | 终端 View 组件 |
 | `plan/` | 设计文档和实现计划 |
-| `docs/` | 用户文档 |
+| `docs/` | 技术文档 |
 
 ### 关键源文件
 
 | 文件 | 职责 |
 |------|------|
-| `PiAgentManager.kt` | Agent 生命周期、session 管理、流式消息 |
-| `PiConfigManager.kt` | Pi 配置读写、系统提示词、环境变量 |
-| `PiRpcRuntime.kt` | pi RPC 进程管理、stdio 通信 |
-| `AiConfigEditor.kt` | 可视化 AI Provider/Model 配置 UI、连接测试、导入导出 |
+| `ChatHttpClient.kt` | Layer 1: HTTPS SSE 流式对话客户端 |
+| `ToolEventBus.kt` | Layer 2: 工具执行总线 |
+| `ConversationManager.kt` | Layer 3: 对话编排器（状态管理 + 工具循环） |
+| `PiAgentManager.kt` | UI 状态管理 + 事件分发 + Session 管理 |
+| `PiConfigManager.kt` | Pi 配置读写、系统提示词 |
+| `AiConfigEditor.kt` | 可视化 AI Provider/Model 配置 UI |
 | `AiConfigTools.kt` | 配置导入导出、API 连接测试、模型列表拉取 |
 | `EndpointCompleter.kt` | API 端点 URL 自动补全 |
 | `AgentModelCatalog.kt` | models.json 解析与模型目录 |
-| `PiWorkspaceMaterializer.kt` | 工作区初始化、脚本部署 |
 | `BoxedAgentLikeScreen.kt` | Agent 聊天主界面 |
-| `DeepIndexToolChain.kt` | 深度索引模式工具链 |
 | `IdaProotRuntime.kt` | proot 进程启动与参数管理 |
 
 ## 构建
@@ -128,6 +134,9 @@ Android App (Kotlin / Jetpack Compose / Material 3)
 
 ## 文档
 
+- [架构文档](docs/architecture.md) — 系统架构、模块设计、数据流
+- [开发指南](docs/development.md) — 环境配置、开发流程、常见问题
+- [项目审计](docs/project-audit.md) — 问题分析与优化记录
 - [计划文档](plan/README.md) — 架构设计、实现路线、风险评估
 - [深度索引模式](docs/deep-index-mode.md) — CodeGraph + ECC + Memory 工具链
 

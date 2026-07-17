@@ -5,17 +5,17 @@ import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -28,6 +28,9 @@ import kotlinx.serialization.json.put
  * - SSE 流式输出
  * - Function calling (tools)
  * - 思考/推理 (thinking/reasoning)
+ * - 指数退避重试（429/5xx/网络错误）
+ * - API 错误解析（OpenAI/Anthropic/Google 格式）
+ * - Token 使用量统计
  *
  * 不依赖 pi agent，不依赖 proot 管道，不依赖环境变量传递。
  * 直接用已配好的 baseUrl + apiKey + model。
@@ -35,7 +38,8 @@ import kotlinx.serialization.json.put
 class ChatHttpClient(
     private val baseUrl: String,
     private val apiKey: String,
-    private val model: String
+    private val model: String,
+    private val providerId: String = ""
 ) {
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false; isLenient = true }
 
@@ -60,6 +64,13 @@ class ChatHttpClient(
         val parameters: JsonObject  // JSON Schema
     )
 
+    /** Token 使用量统计 */
+    data class TokenUsage(
+        val promptTokens: Int = 0,
+        val completionTokens: Int = 0,
+        val totalTokens: Int = 0
+    )
+
     sealed interface StreamEvent {
         /** 文本增量 */
         data class TextDelta(val text: String) : StreamEvent
@@ -75,10 +86,28 @@ class ChatHttpClient(
         /** 流结束 */
         data class Finish(
             val reason: String,           // stop / tool_calls / length
-            val toolCalls: List<ToolCallDto>
+            val toolCalls: List<ToolCallDto>,
+            val usage: TokenUsage = TokenUsage()
         ) : StreamEvent
         /** 错误 */
-        data class Error(val message: String, val httpCode: Int? = null) : StreamEvent
+        data class Error(val message: String, val httpCode: Int? = null, val retryable: Boolean = false) : StreamEvent
+        /** 重试中（用于 UI 提示） */
+        data class Retrying(val attempt: Int, val reason: String, val delayMs: Long) : StreamEvent
+    }
+
+    companion object {
+        private const val MAX_RETRIES = 3
+        private const val INITIAL_RETRY_DELAY_MS = 1000L
+        private const val MAX_RETRY_DELAY_MS = 10_000L
+
+        /** 判断 HTTP 状态码是否可重试 */
+        private fun isRetryableHttp(code: Int): Boolean = code == 429 || code in 500..599
+
+        /** 判断异常是否可重试 */
+        private fun isRetryableException(e: Exception): Boolean = when (e) {
+            is java.io.IOException -> true  // SocketTimeoutException 是 IOException 的子类
+            else -> false
+        }
     }
 
     /**
@@ -88,14 +117,18 @@ class ChatHttpClient(
      * @param tools 可用工具定义
      * @param systemPrompt 系统提示词（会作为第一条 system 消息插入）
      * @param thinkingLevel 思考级别 (low/medium/high，部分模型支持)
-     * @param signalAbort 用于外部取消的 lambda（返回 true 时中断）
+     * @param temperature 温度参数
+     * @param maxTokens 最大生成 token 数（Anthropic 必填）
+     * @param topP 核采样参数
      */
     fun chat(
         messages: List<ChatMessageDto>,
         tools: List<ToolDefinition> = emptyList(),
         systemPrompt: String? = null,
         thinkingLevel: String? = null,
-        temperature: Double? = null
+        temperature: Double? = null,
+        maxTokens: Int? = null,
+        topP: Double? = null
     ): Flow<StreamEvent> = flow {
         val allMessages = buildList {
             if (!systemPrompt.isNullOrBlank()) {
@@ -104,179 +137,365 @@ class ChatHttpClient(
             addAll(messages)
         }
 
-        val requestBody = buildJsonObject {
-            put("model", model)
-            put("messages", buildJsonArray {
-                allMessages.forEach { msg ->
-                    add(buildJsonObject {
-                        put("role", msg.role)
-                        // content: 支持纯文本和多模态
-                        if (msg.images.isNotEmpty()) {
-                            put("content", buildJsonArray {
-                                if (!msg.content.isNullOrBlank()) {
-                                    add(buildJsonObject {
-                                        put("type", "text")
-                                        put("text", msg.content)
-                                    })
-                                }
-                                msg.images.forEach { img ->
-                                    add(buildJsonObject {
-                                        put("type", "image_url")
-                                        put("image_url", buildJsonObject {
-                                            put("url", img)
-                                        })
-                                    })
-                                }
-                            })
-                        } else {
-                            put("content", msg.content)
-                        }
-                        // tool_calls (assistant 消息)
-                        if (msg.toolCalls.isNotEmpty()) {
-                            put("tool_calls", buildJsonArray {
-                                msg.toolCalls.forEach { tc ->
-                                    add(buildJsonObject {
-                                        put("id", tc.id)
-                                        put("type", "function")
-                                        put("function", buildJsonObject {
-                                            put("name", tc.name)
-                                            put("arguments", tc.arguments)
-                                        })
-                                    })
-                                }
-                            })
-                        }
-                        // tool 角色消息
-                        if (msg.role == "tool") {
-                            put("tool_call_id", msg.toolCallId)
-                            msg.name?.let { put("name", it) }
-                        }
-                    })
+        val requestBody = buildRequestBody(
+            allMessages, tools, thinkingLevel, temperature, maxTokens, topP
+        )
+        val url = "${baseUrl.trimEnd('/')}/chat/completions"
+
+        var retryDelay = INITIAL_RETRY_DELAY_MS
+        var lastError: StreamEvent.Error? = null
+
+        for (attempt in 1..MAX_RETRIES) {
+            var shouldRetry = false
+            var retryReason = ""
+
+            try {
+                val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 30_000
+                    readTimeout = 300_000  // 5 分钟读超时（流式模式不会真的等这么久）
+                    doInput = true
+                    instanceFollowRedirects = true
+                    setRequestProperty("Content-Type", "application/json")
+                    setRequestProperty("Authorization", "Bearer $apiKey")
+                    setRequestProperty("Accept", "text/event-stream")
+                    outputStream.write(json.encodeToString(JsonObject.serializer(), requestBody).toByteArray())
                 }
-            })
-            put("stream", true)
-            if (tools.isNotEmpty()) {
-                put("tools", buildJsonArray {
-                    tools.forEach { tool ->
-                        add(buildJsonObject {
-                            put("type", "function")
-                            put("function", buildJsonObject {
-                                put("name", tool.name)
-                                put("description", tool.description)
-                                put("parameters", tool.parameters)
-                            })
+
+                val responseCode = connection.responseCode
+                if (responseCode !in 200..299) {
+                    val errorBody = connection.errorStream?.bufferedReader()?.use { it.readText() }
+                        ?: "HTTP $responseCode"
+                    val parsedError = parseApiError(errorBody, responseCode)
+                    lastError = StreamEvent.Error(parsedError, responseCode, isRetryableHttp(responseCode))
+
+                    if (isRetryableHttp(responseCode) && attempt < MAX_RETRIES) {
+                        shouldRetry = true
+                        retryReason = "HTTP $responseCode"
+                        // 429 Too Many Requests: 尝试读取 Retry-After header
+                        val retryAfter = connection.getHeaderField("Retry-After")?.toIntOrNull()
+                        if (retryAfter != null) {
+                            retryDelay = (retryAfter * 1000L).coerceAtMost(MAX_RETRY_DELAY_MS)
+                        }
+                    }
+                    connection.disconnect()
+                } else {
+                    // SSE 流式读取
+                    val streamResult = readSSEStream(connection)
+                    var hasEmitted = false
+
+                    streamResult.events.forEach { event ->
+                        emit(event)
+                        hasEmitted = true
+                    }
+
+                    connection.disconnect()
+
+                    // 如果流正常结束（收到 Finish 或 Error），不重试
+                    if (hasEmitted) return@flow
+
+                    // 流为空 — 可能是 keep-alive 连接提前关闭
+                    if (attempt < MAX_RETRIES) {
+                        shouldRetry = true
+                        retryReason = "空响应流"
+                    } else {
+                        lastError = StreamEvent.Error("服务器返回空响应", responseCode, false)
+                    }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val retryable = isRetryableException(e)
+                lastError = StreamEvent.Error(e.message ?: e::class.simpleName ?: "网络错误", null, retryable)
+
+                if (retryable && attempt < MAX_RETRIES) {
+                    shouldRetry = true
+                    retryReason = e.javaClass.simpleName
+                }
+            }
+
+            if (shouldRetry) {
+                emit(StreamEvent.Retrying(attempt + 1, retryReason, retryDelay))
+                delay(retryDelay)
+                retryDelay = (retryDelay * 2).coerceAtMost(MAX_RETRY_DELAY_MS)
+            } else {
+                lastError?.let { emit(it) }
+                return@flow
+            }
+        }
+
+        // 所有重试用尽
+        lastError?.let { emit(it) }
+    }.flowOn(Dispatchers.IO)
+
+    /** 构建请求体 */
+    private fun buildRequestBody(
+        messages: List<ChatMessageDto>,
+        tools: List<ToolDefinition>,
+        thinkingLevel: String?,
+        temperature: Double?,
+        maxTokens: Int?,
+        topP: Double?
+    ): JsonObject = buildJsonObject {
+        put("model", model)
+        put("messages", buildJsonArray {
+            messages.forEach { msg ->
+                add(buildJsonObject {
+                    put("role", msg.role)
+                    // content: 支持纯文本和多模态
+                    if (msg.images.isNotEmpty()) {
+                        put("content", buildJsonArray {
+                            if (!msg.content.isNullOrBlank()) {
+                                add(buildJsonObject {
+                                    put("type", "text")
+                                    put("text", msg.content)
+                                })
+                            }
+                            msg.images.forEach { img ->
+                                add(buildJsonObject {
+                                    put("type", "image_url")
+                                    put("image_url", buildJsonObject {
+                                        put("url", img)
+                                    })
+                                })
+                            }
                         })
+                    } else {
+                        put("content", msg.content)
+                    }
+                    // tool_calls (assistant 消息)
+                    if (msg.toolCalls.isNotEmpty()) {
+                        put("tool_calls", buildJsonArray {
+                            msg.toolCalls.forEach { tc ->
+                                add(buildJsonObject {
+                                    put("id", tc.id)
+                                    put("type", "function")
+                                    put("function", buildJsonObject {
+                                        put("name", tc.name)
+                                        put("arguments", tc.arguments)
+                                    })
+                                })
+                            }
+                        })
+                    }
+                    // tool 角色消息
+                    if (msg.role == "tool") {
+                        put("tool_call_id", msg.toolCallId)
+                        msg.name?.let { put("name", it) }
                     }
                 })
             }
-            thinkingLevel?.takeIf { it.isNotBlank() }?.let {
-                // 部分 OpenAI 兼容 API 通过额外字段支持思考
-                put("reasoning_effort", it)
-            }
-            temperature?.let { put("temperature", it) }
+        })
+        put("stream", true)
+        // stream_options: 请求 usage 统计
+        put("stream_options", buildJsonObject { put("include_usage", true) })
+        if (tools.isNotEmpty()) {
+            put("tools", buildJsonArray {
+                tools.forEach { tool ->
+                    add(buildJsonObject {
+                        put("type", "function")
+                        put("function", buildJsonObject {
+                            put("name", tool.name)
+                            put("description", tool.description)
+                            put("parameters", tool.parameters)
+                        })
+                    })
+                }
+            })
         }
-
-        val url = "${baseUrl.trimEnd('/')}/chat/completions"
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 30_000
-            readTimeout = 300_000  // 5 分钟读超时（流式模式不会真的等这么久）
-            doInput = true
-            instanceFollowRedirects = true
-            setRequestProperty("Content-Type", "application/json")
-            setRequestProperty("Authorization", "Bearer $apiKey")
-            setRequestProperty("Accept", "text/event-stream")
-            outputStream.write(json.encodeToString(JsonObject.serializer(), requestBody).toByteArray())
+        thinkingLevel?.takeIf { it.isNotBlank() }?.let {
+            // 部分 OpenAI 兼容 API 通过额外字段支持思考
+            put("reasoning_effort", it)
         }
+        temperature?.let { put("temperature", it) }
+        maxTokens?.let { put("max_tokens", it) }
+        topP?.let { put("top_p", it) }
+    }
 
-        val responseCode = connection.responseCode
-        if (responseCode !in 200..299) {
-            val errorBody = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $responseCode"
-            emit(StreamEvent.Error(errorBody, responseCode))
-            connection.disconnect()
-            return@flow
-        }
-
-        // SSE 流式读取
+    /** SSE 流读取 + 解析 */
+    private fun readSSEStream(connection: HttpURLConnection): StreamReadResult {
         val pendingToolCalls = mutableMapOf<Int, MutableMap<String, String>>()
+        val events = mutableListOf<StreamEvent>()
+        var lastUsage: TokenUsage? = null
 
         try {
             connection.inputStream.bufferedReader().use { reader ->
+                val sseBuffer = StringBuilder()
+
                 while (true) {
                     kotlinx.coroutines.coroutineScope { ensureActive() }
                     val line = reader.readLine() ?: break
-                    if (line.isBlank()) continue
-                    if (!line.startsWith("data:")) continue
-                    val data = line.removePrefix("data:").trim()
-                    if (data == "[DONE]") {
-                        val finalToolCalls = pendingToolCalls.toSortedMap().values.mapNotNull { m ->
-                            val id = m["id"] ?: return@mapNotNull null
-                            val name = m["name"] ?: return@mapNotNull null
-                            ToolCallDto(id, name, m["arguments"] ?: "{}")
+
+                    // SSE 协议：空行表示一个 event 结束
+                    if (line.isEmpty()) {
+                        if (sseBuffer.isNotEmpty()) {
+                            val parsed = parseSSEEvent(sseBuffer.toString(), pendingToolCalls)
+                            // 拦截 usage 信息，确保流结束时仍可携带
+                            if (parsed is StreamEvent.Finish) {
+                                lastUsage = parsed.usage.takeIf { it.totalTokens > 0 } ?: lastUsage
+                            }
+                            parsed?.let { events.add(it) }
+                            // 收到 Finish 事件，结束读取
+                            if (parsed is StreamEvent.Finish) return StreamReadResult(events)
+                            if (parsed is StreamEvent.Error) return StreamReadResult(events)
+                            sseBuffer.clear()
                         }
-                        emit(StreamEvent.Finish(if (finalToolCalls.isNotEmpty()) "tool_calls" else "stop", finalToolCalls))
-                        return@flow
+                        continue
                     }
 
-                    val chunk = try {
-                        json.parseToJsonElement(data).jsonObject
-                    } catch (e: Exception) { continue }
+                    // 跳过注释行（以 : 开头的 keep-alive）
+                    if (line.startsWith(":")) continue
 
-                    val choices = chunk["choices"]?.jsonArray ?: continue
-                    val choice = choices.firstOrNull()?.jsonObject ?: continue
-                    val delta = choice["delta"]?.jsonObject ?: continue
-                    val finishReason = choice["finish_reason"]?.jsonPrimitive?.contentOrNull
-
-                    // 文本增量
-                    delta["content"]?.jsonPrimitive?.contentOrNull?.let { text ->
-                        if (text.isNotEmpty()) emit(StreamEvent.TextDelta(text))
-                    }
-
-                    // 思考/推理增量
-                    delta["reasoning_content"]?.jsonPrimitive?.contentOrNull?.let { text ->
-                        if (text.isNotEmpty()) emit(StreamEvent.ThinkingDelta(text))
-                    }
-                    delta["thinking"]?.jsonPrimitive?.contentOrNull?.let { text ->
-                        if (text.isNotEmpty()) emit(StreamEvent.ThinkingDelta(text))
-                    }
-
-                    // 工具调用增量
-                    delta["tool_calls"]?.jsonArray?.forEach { tc ->
-                        val tcObj = tc.jsonObject
-                        val index = tcObj["index"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
-                        val entry = pendingToolCalls.getOrPut(index) { mutableMapOf() }
-                        tcObj["id"]?.jsonPrimitive?.contentOrNull?.let { entry["id"] = it }
-                        tcObj["function"]?.jsonObject?.let { fn ->
-                            fn["name"]?.jsonPrimitive?.contentOrNull?.let { entry["name"] = it }
-                            fn["arguments"]?.jsonPrimitive?.contentOrNull?.let { entry["arguments"] = (entry["arguments"] ?: "") + it }
-                        }
-                    }
-
-                    // finish_reason
-                    if (finishReason != null) {
-                        val finalToolCalls = pendingToolCalls.toSortedMap().values.mapNotNull { m ->
-                            val id = m["id"] ?: return@mapNotNull null
-                            val name = m["name"] ?: return@mapNotNull null
-                            ToolCallDto(id, name, m["arguments"] ?: "{}")
-                        }
-                        emit(StreamEvent.Finish(finishReason, finalToolCalls))
-                        return@flow
-                    }
+                    sseBuffer.appendLine(line)
                 }
+
+                // 流结束时处理剩余 buffer
+                if (sseBuffer.isNotEmpty()) {
+                    val parsed = parseSSEEvent(sseBuffer.toString(), pendingToolCalls)
+                    if (parsed is StreamEvent.Finish) {
+                        lastUsage = parsed.usage.takeIf { it.totalTokens > 0 } ?: lastUsage
+                    }
+                    parsed?.let { events.add(it) }
+                }
+
                 // 流自然结束但没收到 [DONE] 或 finish_reason
-                val finalToolCalls = pendingToolCalls.toSortedMap().values.mapNotNull { m ->
-                    val id = m["id"] ?: return@mapNotNull null
-                    val name = m["name"] ?: return@mapNotNull null
-                    ToolCallDto(id, name, m["arguments"] ?: "{}")
+                if (events.none { it is StreamEvent.Finish || it is StreamEvent.Error }) {
+                    val finalToolCalls = pendingToolCalls.toSortedMap().values.mapNotNull { m ->
+                        val id = m["id"] ?: return@mapNotNull null
+                        val name = m["name"] ?: return@mapNotNull null
+                        ToolCallDto(id, name, m["arguments"] ?: "{}")
+                    }
+                    events.add(StreamEvent.Finish(
+                        if (finalToolCalls.isNotEmpty()) "tool_calls" else "stop",
+                        finalToolCalls,
+                        lastUsage ?: TokenUsage()
+                    ))
                 }
-                emit(StreamEvent.Finish(if (finalToolCalls.isNotEmpty()) "tool_calls" else "stop", finalToolCalls))
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            emit(StreamEvent.Error(e.message ?: "网络错误"))
-        } finally {
-            connection.disconnect()
+            events.add(StreamEvent.Error(e.message ?: e::class.simpleName ?: "网络错误", null, isRetryableException(e)))
         }
+
+        return StreamReadResult(events)
     }
+
+    /** 解析单个 SSE event */
+    private fun parseSSEEvent(
+        rawData: String,
+        pendingToolCalls: MutableMap<Int, MutableMap<String, String>>
+    ): StreamEvent? {
+        // 提取 data: 字段（可能有多行 data:，需拼接）
+        val dataLines = rawData.lines().filter { it.startsWith("data:") }
+        if (dataLines.isEmpty()) return null
+
+        val data = dataLines.joinToString("") { it.removePrefix("data:").trim() }
+        if (data == "[DONE]") {
+            val finalToolCalls = pendingToolCalls.toSortedMap().values.mapNotNull { m ->
+                val id = m["id"] ?: return@mapNotNull null
+                val name = m["name"] ?: return@mapNotNull null
+                ToolCallDto(id, name, m["arguments"] ?: "{}")
+            }
+            return StreamEvent.Finish(
+                if (finalToolCalls.isNotEmpty()) "tool_calls" else "stop",
+                finalToolCalls
+            )
+        }
+
+        val chunk = try {
+            json.parseToJsonElement(data).jsonObject
+        } catch (e: Exception) { return null }
+
+        // 提取 usage（stream_options.include_usage 返回）
+        val usage = chunk["usage"]?.jsonObject?.let { u ->
+            TokenUsage(
+                promptTokens = u["prompt_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
+                completionTokens = u["completion_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
+                totalTokens = u["total_tokens"]?.jsonPrimitive?.intOrNull ?: 0
+            )
+        }
+
+        val choices = chunk["choices"]?.jsonArray
+        // 空 choices（keep-alive usage 帧）— 返回 usage 作为 Finish 事件
+        if (choices.isNullOrEmpty()) {
+            if (usage != null && pendingToolCalls.isEmpty()) {
+                // usage 帧通常是流中最后一个 chunk，标记为 stop
+                return StreamEvent.Finish("stop", emptyList(), usage)
+            }
+            return null
+        }
+
+        val choice = choices.firstOrNull()?.jsonObject ?: return null
+        val delta = choice["delta"]?.jsonObject ?: return null
+        val finishReason = choice["finish_reason"]?.jsonPrimitive?.contentOrNull
+
+        // 文本增量
+        delta["content"]?.jsonPrimitive?.contentOrNull?.let { text ->
+            if (text.isNotEmpty()) return StreamEvent.TextDelta(text)
+        }
+
+        // 思考/推理增量 — 兼容多种字段名
+        delta["reasoning_content"]?.jsonPrimitive?.contentOrNull?.let { text ->
+            if (text.isNotEmpty()) return StreamEvent.ThinkingDelta(text)
+        }
+        delta["thinking"]?.jsonPrimitive?.contentOrNull?.let { text ->
+            if (text.isNotEmpty()) return StreamEvent.ThinkingDelta(text)
+        }
+        // DeepSeek R1 风格: reasoning_content 在 message 级别
+        chunk["reasoning_content"]?.jsonPrimitive?.contentOrNull?.let { text ->
+            if (text.isNotEmpty()) return StreamEvent.ThinkingDelta(text)
+        }
+
+        // 工具调用增量
+        delta["tool_calls"]?.jsonArray?.forEach { tc ->
+            val tcObj = tc.jsonObject
+            val index = tcObj["index"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
+            val entry = pendingToolCalls.getOrPut(index) { mutableMapOf() }
+            tcObj["id"]?.jsonPrimitive?.contentOrNull?.let { entry["id"] = it }
+            tcObj["function"]?.jsonObject?.let { fn ->
+                fn["name"]?.jsonPrimitive?.contentOrNull?.let { entry["name"] = it }
+                fn["arguments"]?.jsonPrimitive?.contentOrNull?.let { entry["arguments"] = (entry["arguments"] ?: "") + it }
+            }
+        }
+
+        // finish_reason
+        if (finishReason != null) {
+            val finalToolCalls = pendingToolCalls.toSortedMap().values.mapNotNull { m ->
+                val id = m["id"] ?: return@mapNotNull null
+                val name = m["name"] ?: return@mapNotNull null
+                ToolCallDto(id, name, m["arguments"] ?: "{}")
+            }
+            return StreamEvent.Finish(finishReason, finalToolCalls, usage ?: TokenUsage())
+        }
+
+        return null
+    }
+
+    /**
+     * 解析 API 错误响应，提取人类可读的错误消息。
+     * 兼容 OpenAI / Anthropic / Google / 通用格式。
+     */
+    private fun parseApiError(body: String, httpCode: Int): String = try {
+        val parsed = json.parseToJsonElement(body).jsonObject
+
+        // OpenAI / Anthropic / Google 统一格式: { "error": { "message": "..." } }
+        parsed["error"]?.jsonObject?.get("message")?.jsonPrimitive?.contentOrNull?.let { return it }
+
+        // OpenAI 变体: { "error": { "code": "...", "detail": "..." } }
+        parsed["error"]?.jsonObject?.get("detail")?.jsonPrimitive?.contentOrNull?.let { return it }
+
+        // Generic: { "message": "..." }
+        parsed["message"]?.jsonPrimitive?.contentOrNull?.let { return it }
+
+        // Generic: { "detail": "..." }
+        parsed["detail"]?.jsonPrimitive?.contentOrNull?.let { return it }
+
+        "HTTP $httpCode: $body"
+    } catch (_: Exception) {
+        "HTTP $httpCode: ${body.take(500)}"
+    }
+
+    /** SSE 流读取结果 */
+    private data class StreamReadResult(val events: List<StreamEvent>)
 }

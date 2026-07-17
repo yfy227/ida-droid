@@ -23,12 +23,24 @@ import kotlinx.coroutines.launch
  *  - `GET  /api/transfers`          → JSON manifest of all transfer entries
  *  - `GET  /api/transfers?name=foo` → single entry matching `foo` (or 404)
  *  - `POST /api/transfer?path=<host_path>` → copy a host file into the container
+ *  - `POST /api/transfer-and-open?name=foo` → search host + transfer into container
+ *  - `POST /api/open-in-ida?name=foo` → one-shot: search host → transfer → call
+ *    ida-mcp `open_file` so IDA Pro opens the file immediately. External tools
+ *    (desktop IDEs, scripts, share-sheets) can use this to push a file into IDA
+ *    without manually running `mcpc call open_file` inside the container.
  *  - `DELETE /api/transfers?id=<id>` → remove a transfer entry and its file
  *  - `GET  /health`                 → `{"status":"ok"}`
+ *
+ * @param idaMcpEndpointProvider returns the current ida-mcp HTTP endpoint
+ *  (e.g. `http://127.0.0.1:8765`) when the ida-mcp server is running, or null
+ *  when it is stopped. The `/api/open-in-ida` endpoint uses this to invoke the
+ *  `open_file` tool; when null, it returns 503 so the caller knows to start
+ *  IDA MCP first.
  */
 class FileTransferHttpServer(
     private val manager: FileTransferManager,
-    private val port: Int = DEFAULT_PORT
+    private val port: Int = DEFAULT_PORT,
+    private val idaMcpEndpointProvider: () -> String? = { null }
 ) {
     private var scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var serverSocket: ServerSocket? = null
@@ -89,9 +101,15 @@ class FileTransferHttpServer(
 
             // Read headers
             val headers = mutableMapOf<String, String>()
+            var headerCount = 0
             while (true) {
                 val line = reader.readLine() ?: break
                 if (line.isEmpty()) break
+                headerCount++
+                if (headerCount > MAX_HEADERS) {
+                    respondJson(output, 431, "{\"error\":\"too many headers (max $MAX_HEADERS)\"}")
+                    return
+                }
                 val colon = line.indexOf(':')
                 if (colon > 0) {
                     headers[line.substring(0, colon).trim().lowercase()] = line.substring(colon + 1).trim()
@@ -101,6 +119,10 @@ class FileTransferHttpServer(
             // Read body if present (read raw bytes from the underlying stream)
             val contentLength = headers["content-length"]?.toIntOrNull() ?: 0
             val body = if (contentLength > 0) {
+                if (contentLength > MAX_BODY_BYTES) {
+                    respondJson(output, 413, "{\"error\":\"request body too large (max ${MAX_BODY_BYTES} bytes)\"}")
+                    return
+                }
                 val rawInput = socket.getInputStream()
                 val buf = ByteArray(contentLength)
                 var read = 0
@@ -141,7 +163,7 @@ class FileTransferHttpServer(
                 if (name != null) {
                     val entry = manager.findTransfer(name)
                     if (entry != null) {
-                        respondJson(output, 200, manager.manifestJson().let { it })
+                        respondJson(output, 200, entryJson(entry))
                     } else {
                         respondJson(output, 404, "{\"error\":\"no transfer matching '$name'\"}")
                     }
@@ -192,6 +214,48 @@ class FileTransferHttpServer(
                 }
             }
 
+            // 一站式：搜索主机 → 传输进容器 → 调用 ida-mcp open_file 让 IDA 打开
+            // 外部工具（桌面 IDE / 脚本 / 分享面板）只需一个 HTTP 请求即可把文件推给 IDA。
+            path == "/api/open-in-ida" && method == "POST" -> {
+                val name = query["name"]
+                val hostPath = query["path"]
+                if (name.isNullOrBlank() && hostPath.isNullOrBlank()) {
+                    respondJson(output, 400, "{\"error\":\"missing 'name' or 'path' query parameter\"}")
+                    return
+                }
+                val endpoint = idaMcpEndpointProvider()
+                if (endpoint.isNullOrBlank()) {
+                    respondJson(output, 503, "{\"error\":\"IDA MCP server is not running; start it first\"}")
+                    return
+                }
+                // 1. 获取容器内路径：优先用已传输的，否则搜索+传输
+                val transferResult = runCatching {
+                    when {
+                        !hostPath.isNullOrBlank() -> manager.transferHostPath(hostPath)
+                        else -> manager.findAndTransferByName(name!!)
+                    }
+                }
+                // runCatching 会吞 CancellationException，重新抛出以保留取消信号
+                val transferCause = transferResult.exceptionOrNull()
+                if (transferCause is kotlinx.coroutines.CancellationException) throw transferCause
+                val entry = transferResult.getOrNull()
+                if (entry == null) {
+                    respondJson(output, 404, "{\"error\":\"file not found or transfer failed: ${escapeJson(name ?: hostPath ?: "")}\"}")
+                    return
+                }
+                // 2. 调用 ida-mcp 的 open_file 工具
+                val client = IdaMcpClient(endpoint)
+                val toolResult = runCatching { client.openFile(entry.prootPath) }
+                // runCatching 会吞 CancellationException，重新抛出以保留取消信号
+                val cause = toolResult.exceptionOrNull()
+                if (cause is kotlinx.coroutines.CancellationException) throw cause
+                toolResult.onSuccess { resultText ->
+                    respondJson(output, 200, openInIdaResultJson(entry, true, resultText))
+                }.onFailure { err ->
+                    respondJson(output, 200, openInIdaResultJson(entry, false, err.message ?: "open_file failed"))
+                }
+            }
+
             path == "/api/transfers" && method == "DELETE" -> {
                 val id = query["id"]
                 if (id.isNullOrBlank()) {
@@ -210,6 +274,14 @@ class FileTransferHttpServer(
         return """{"id":"${escapeJson(entry.id)}","name":"${escapeJson(entry.name)}",""" +
             """"prootPath":"${escapeJson(entry.prootPath)}","size":${entry.size},""" +
             """"mimeType":"${escapeJson(entry.mimeType)}","transferredAt":${entry.transferredAt}}"""
+    }
+
+    private fun openInIdaResultJson(
+        entry: FileTransferManager.TransferEntry,
+        opened: Boolean,
+        message: String
+    ): String {
+        return """{"opened":$opened,"transfer":${entryJson(entry)},"message":"${escapeJson(message)}"}"""
     }
 
     private fun parseQuery(query: String): Map<String, String> {
@@ -256,12 +328,19 @@ class FileTransferHttpServer(
         200 -> "OK"
         400 -> "Bad Request"
         404 -> "Not Found"
+        413 -> "Payload Too Large"
+        431 -> "Request Header Fields Too Large"
         500 -> "Internal Server Error"
+        503 -> "Service Unavailable"
         else -> "OK"
     }
 
     companion object {
         private const val TAG = "FileTransferHttpServer"
         const val DEFAULT_PORT = 8766
+        /** Maximum accepted HTTP request body size (10 MB). Prevents OOM from malicious Content-Length. */
+        private const val MAX_BODY_BYTES = 10 * 1024 * 1024
+        /** Maximum number of HTTP request headers. Prevents OOM from malicious clients sending endless headers. */
+        private const val MAX_HEADERS = 100
     }
 }

@@ -248,6 +248,25 @@ class PiWorkspaceMaterializer {
             shift || true
             local path=""
 
+            # 0. 快速路径：直接调用 /api/open-in-ida 一步完成搜索+传输+IDA打开
+            #    仅当 mcpc 不可用（agent 未安装）或用户显式希望走 HTTP 桥时跳过
+            if command -v curl >/dev/null 2>&1; then
+                local one_shot
+                # -G 把 --data-urlencode 的参数放到 query string，正确编码文件名
+                one_shot=$(curl -fsS --max-time 30 -X POST -G \
+                    --data-urlencode "name=${D}needle" \
+                    "http://${D}{MCP_HOST}:${D}{MCP_PORT}/api/open-in-ida" 2>/dev/null || true)
+                if [ -n "${D}one_shot" ] && echo "${D}one_shot" | grep -q '"opened":true'; then
+                    local opened_path opened_msg
+                    opened_path=$(printf '%s' "${D}one_shot" | sed -n 's/.*"prootPath"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+                    opened_msg=$(printf '%s' "${D}one_shot" | sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+                    echo "idadroid-file: 已通过 MCP 一键打开 → ${D}opened_path"
+                    [ -n "${D}opened_msg" ] && echo "  ${D}opened_msg}"
+                    return 0
+                fi
+                # opened:false 或无响应 → 继续走旧逻辑（可能是 ida-mcp 未运行）
+            fi
+
             # 1. 先在 .mcp-transfer 里找
             path=$(find_path "${D}needle" 2>/dev/null || true)
             if [ -n "${D}path" ] && [ -f "${D}path" ]; then
@@ -263,7 +282,9 @@ class PiWorkspaceMaterializer {
             # 2. 通过 HTTP bridge 在主机端搜索文件，找到后自动传进容器
             if command -v curl >/dev/null 2>&1; then
                 local resp
-                resp=$(curl -fsS --max-time 30 -X POST "http://${D}{MCP_HOST}:${D}{MCP_PORT}/api/transfer-and-open?name=${D}(printf '%s' "${D}needle" | sed 's/ /%20/g')" 2>/dev/null || true)
+                resp=$(curl -fsS --max-time 30 -X POST -G \
+                    --data-urlencode "name=${D}needle" \
+                    "http://${D}{MCP_HOST}:${D}{MCP_PORT}/api/transfer-and-open" 2>/dev/null || true)
                 if [ -n "${D}resp" ] && echo "${D}resp" | grep -q '"prootPath"'; then
                     path=$(printf '%s' "${D}resp" | sed -n 's/.*"prootPath"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
                     echo "idadroid-file: 已从主机传输到容器 → ${D}path"
@@ -329,6 +350,7 @@ Usage:
   idadroid-file latest          查看最近上传的文件
 
 当 agent 请求打开文件时，idadroid-file open 会:
+0. 优先尝试 /api/open-in-ida 一步完成搜索+传输+IDA打开（需 IDA MCP 运行中）
 1. 先在 .mcp-transfer/ 中查找已上传的文件
 2. 没找到则通过 HTTP bridge 在主机端搜索（/sdcard, Download 等）
 3. 主机端找到后自动传输进容器，然后用 mcpc call open_file 打开

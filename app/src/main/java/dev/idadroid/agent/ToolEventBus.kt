@@ -150,6 +150,26 @@ class ToolEventBus(
     }
 
     /**
+     * 判断工具执行结果是否成功。
+     *
+     * 统一的成功/失败判断逻辑，替代字符串前缀匹配。
+     * 规则：
+     * - 以 "错误:" 开头 → 失败
+     * - 以 "Error:" 或 "ERROR:" 开头 → 失败
+     * - 其他 → 成功
+     *
+     * 注意：这是启发式判断，对包含 "错误:" 但实际成功的边缘情况可能误判。
+     * 未来应改为工具返回结构化结果。
+     */
+    fun isToolResultSuccess(toolName: String, result: String): Boolean {
+        val trimmed = result.trim()
+        if (trimmed.isEmpty()) return false
+        // 检查失败前缀
+        val failurePrefixes = listOf("错误:", "Error:", "ERROR:", "exception:", "Exception:")
+        return failurePrefixes.none { prefix -> trimmed.startsWith(prefix) }
+    }
+
+    /**
      * 在 proot 内执行 shell 命令。
      * 使用轮询方式检查进程完成，避免长时间阻塞。
      */

@@ -192,12 +192,22 @@ class FileTransferManager(
             // 先尝试精确匹配
             val exact = File(dir, cleanName)
             if (exact.isFile) {
-                return@withContext runCatching { transferHostPath(exact.absolutePath) }.getOrNull()
+                return@withContext runCatching { transferHostPath(exact.absolutePath) }.let { result ->
+                    if (result.exceptionOrNull() is kotlinx.coroutines.CancellationException) {
+                        throw result.exceptionOrNull()!!
+                    }
+                    result.getOrNull()
+                }
             }
             // 再尝试在子目录中搜索（最多2层）
             val found = searchFile(dir, needle, maxDepth = 2)
             if (found != null) {
-                return@withContext runCatching { transferHostPath(found.absolutePath) }.getOrNull()
+                return@withContext runCatching { transferHostPath(found.absolutePath) }.let { result ->
+                    if (result.exceptionOrNull() is kotlinx.coroutines.CancellationException) {
+                        throw result.exceptionOrNull()!!
+                    }
+                    result.getOrNull()
+                }
             }
         }
         null

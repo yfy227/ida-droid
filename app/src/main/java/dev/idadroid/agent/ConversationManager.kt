@@ -8,16 +8,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Layer 3: 对话管理器 — 编排 Layer 1 + Layer 2
@@ -30,6 +29,8 @@ import kotlinx.serialization.json.jsonPrimitive
  *
  * 这就是"长对话模式"：AI 主动调用工具 → 执行 → 继续 → 直到完成。
  * 不再有 RPC 管道、进程管理、超时问题。
+ *
+ * 线程安全：所有对 current 对话状态的访问通过 mutex 保护。
  */
 class ConversationManager(
     private val context: Context,
@@ -43,10 +44,12 @@ class ConversationManager(
     sealed interface ConvEvent {
         data class TextDelta(val text: String) : ConvEvent
         data class ThinkingDelta(val text: String) : ConvEvent
-        data class ToolCallStart(val toolName: String, val args: String) : ConvEvent
-        data class ToolCallResult(val toolName: String, val result: String, val success: Boolean) : ConvEvent
+        data class ToolCallStart(val toolCallId: String, val toolName: String, val args: String) : ConvEvent
+        data class ToolCallResult(val toolCallId: String, val toolName: String, val result: String, val success: Boolean) : ConvEvent
         data class PhaseChange(val phase: String?) : ConvEvent  // null=idle, "connecting", "receiving", "executing_tool"
         data class Error(val message: String) : ConvEvent
+        data class TokenUsageUpdate(val promptTokens: Int, val completionTokens: Int, val totalTokens: Int) : ConvEvent
+        data class Retrying(val attempt: Int, val reason: String, val delayMs: Long) : ConvEvent
         object TurnEnd : ConvEvent
     }
 
@@ -54,9 +57,17 @@ class ConversationManager(
         val baseUrl: String,
         val apiKey: String,
         val model: String,
+        val providerId: String = "",
         val systemPrompt: String,
         val thinkingLevel: String? = null,
-        val maxToolRounds: Int = 50  // 最多工具调用轮次，防止无限循环
+        val maxToolRounds: Int = 50,  // 最多工具调用轮次，防止无限循环
+        val maxTokens: Int? = null,
+        val temperature: Double? = null,
+        val topP: Double? = null,
+        /** 上下文窗口管理的估算 token 上限 */
+        val contextTokenLimit: Int = 32_000,
+        /** 单个工具调用超时（毫秒） */
+        val toolTimeoutMs: Long = 120_000L
     )
 
     /** 一次对话的完整状态 */
@@ -65,14 +76,33 @@ class ConversationManager(
         val messages: MutableList<ChatHttpClient.ChatMessageDto>,
         var toolRound: Int = 0,
         var activeJob: Job? = null,
-        var aborted: Boolean = false
+        @Volatile var aborted: Boolean = false
     )
 
+    private val mutex = Mutex()
     private var current: Conversation? = null
+    private val toolBus = ToolEventBus(context, proot, paths)
     val events = MutableSharedFlow<ConvEvent>(extraBufferCapacity = 256)
 
+    /** 累计 token 使用量 */
+    @Volatile private var totalPromptTokens: Int = 0
+    @Volatile private var totalCompletionTokens: Int = 0
+    @Volatile private var totalTokens: Int = 0
+
     /** 当前对话的消息历史（持久化用） */
-    fun getMessages(): List<ChatHttpClient.ChatMessageDto> = current?.messages?.toList() ?: emptyList()
+    suspend fun getMessages(): List<ChatHttpClient.ChatMessageDto> = mutex.withLock {
+        current?.messages?.toList() ?: emptyList()
+    }
+
+    /** 获取累计 token 使用量 */
+    fun getTokenUsage(): Triple<Int, Int, Int> = Triple(totalPromptTokens, totalCompletionTokens, totalTokens)
+
+    /** 重置 token 计数器 */
+    fun resetTokenUsage() {
+        totalPromptTokens = 0
+        totalCompletionTokens = 0
+        totalTokens = 0
+    }
 
     /**
      * 发送用户消息，启动对话流。
@@ -87,8 +117,17 @@ class ConversationManager(
         config: ConvConfig,
         onEvent: (ConvEvent) -> Unit
     ) {
-        val conv = current ?: Conversation(config, mutableListOf()).also { current = it }
-        conv.aborted = false
+        val conv = mutex.withLock {
+            val existing = current
+            if (existing != null && existing.config.model == config.model) {
+                existing.aborted = false
+                existing
+            } else {
+                val newConv = Conversation(config, mutableListOf())
+                current = newConv
+                newConv
+            }
+        }
 
         // 追加用户消息
         conv.messages.add(ChatHttpClient.ChatMessageDto(
@@ -97,9 +136,11 @@ class ConversationManager(
             images = images
         ))
 
-        val client = ChatHttpClient(config.baseUrl, config.apiKey, config.model)
-        val tools = ToolEventBus(context, proot, paths).toolDefinitions()
-        val toolBus = ToolEventBus(context, proot, paths)
+        // 上下文窗口管理：在发送前检查并截断
+        trimContextIfNeeded(conv)
+
+        val client = ChatHttpClient(config.baseUrl, config.apiKey, config.model, config.providerId)
+        val tools = toolBus.toolDefinitions()
 
         onEvent(ConvEvent.PhaseChange("connecting"))
 
@@ -116,7 +157,10 @@ class ConversationManager(
                     messages = conv.messages.toList(),
                     tools = tools,
                     systemPrompt = config.systemPrompt,
-                    thinkingLevel = config.thinkingLevel
+                    thinkingLevel = config.thinkingLevel,
+                    temperature = config.temperature,
+                    maxTokens = config.maxTokens,
+                    topP = config.topP
                 ).collect { event ->
                     when (event) {
                         is ChatHttpClient.StreamEvent.TextDelta -> {
@@ -134,9 +178,21 @@ class ConversationManager(
                         is ChatHttpClient.StreamEvent.Finish -> {
                             finishReason = event.reason
                             finishToolCalls = event.toolCalls
+                            // 更新 token 统计
+                            if (event.usage.totalTokens > 0) {
+                                totalPromptTokens += event.usage.promptTokens
+                                totalCompletionTokens += event.usage.completionTokens
+                                totalTokens += event.usage.totalTokens
+                                onEvent(ConvEvent.TokenUsageUpdate(
+                                    totalPromptTokens, totalCompletionTokens, totalTokens
+                                ))
+                            }
                         }
                         is ChatHttpClient.StreamEvent.Error -> {
                             errorMessage = event.message
+                        }
+                        is ChatHttpClient.StreamEvent.Retrying -> {
+                            onEvent(ConvEvent.Retrying(event.attempt, event.reason, event.delayMs))
                         }
                     }
                 }
@@ -168,34 +224,25 @@ class ConversationManager(
                 return
             }
 
-            // 执行工具调用
+            // 执行工具调用 — 并行执行无依赖的工具
             onEvent(ConvEvent.PhaseChange("executing_tool"))
-            for (tc in finishToolCalls) {
-                if (conv.aborted) break
+            val toolResults = executeToolCallsParallel(finishToolCalls, conv, config, onEvent)
 
-                onEvent(ConvEvent.ToolCallStart(tc.name, tc.arguments))
-
-                val result = try {
-                    toolBus.execute(tc.name, tc.arguments)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    "工具执行错误: ${e.message}"
-                }
-
-                val success = !result.startsWith("错误:")
-                onEvent(ConvEvent.ToolCallResult(tc.name, result, success))
-
-                // 追加 tool 结果消息
+            // 追加所有 tool 结果消息
+            toolResults.forEach { (toolCall, result) ->
                 conv.messages.add(ChatHttpClient.ChatMessageDto(
                     role = "tool",
-                    content = result,
-                    toolCallId = tc.id,
-                    name = tc.name
+                    content = result.output,
+                    toolCallId = toolCall.id,
+                    name = toolCall.name
                 ))
             }
 
             conv.toolRound++
+
+            // 上下文窗口管理：工具调用后也可能需要截断
+            trimContextIfNeeded(conv)
+
             onEvent(ConvEvent.PhaseChange("connecting"))
         }
 
@@ -207,6 +254,107 @@ class ConversationManager(
         onEvent(ConvEvent.TurnEnd)
     }
 
+    /**
+     * 并行执行多个工具调用。
+     * 每个工具有独立的超时保护。
+     */
+    private suspend fun executeToolCallsParallel(
+        toolCalls: List<ChatHttpClient.ToolCallDto>,
+        conv: Conversation,
+        config: ConvConfig,
+        onEvent: (ConvEvent) -> Unit
+    ): List<Pair<ChatHttpClient.ToolCallDto, ToolResult>> {
+        if (toolCalls.size == 1) {
+            // 单工具调用 — 直接执行，无需 async 开销
+            val tc = toolCalls.first()
+            if (conv.aborted) return listOf(tc to ToolResult(false, "已中止", "Aborted"))
+            onEvent(ConvEvent.ToolCallStart(tc.id, tc.name, tc.arguments))
+            val result = executeSingleTool(tc, config)
+            onEvent(ConvEvent.ToolCallResult(tc.id, tc.name, result.output, result.success))
+            return listOf(tc to result)
+        }
+
+        // 多工具并行
+        onEvent(ConvEvent.PhaseChange("executing_tool"))
+        val deferreds = toolCalls.map { tc ->
+            scope.async {
+                if (conv.aborted) {
+                    ToolResult(false, "已中止", "Aborted")
+                } else {
+                    onEvent(ConvEvent.ToolCallStart(tc.id, tc.name, tc.arguments))
+                    val result = executeSingleTool(tc, config)
+                    onEvent(ConvEvent.ToolCallResult(tc.id, tc.name, result.output, result.success))
+                    result
+                }
+            }
+        }
+        return toolCalls.zip(deferreds.awaitAll())
+    }
+
+    /** 执行单个工具调用，带超时保护 */
+    private suspend fun executeSingleTool(
+        tc: ChatHttpClient.ToolCallDto,
+        config: ConvConfig
+    ): ToolResult {
+        return try {
+            withTimeoutOrNull(config.toolTimeoutMs) {
+                val raw = toolBus.execute(tc.name, tc.arguments)
+                // 统一成功/失败判断
+                val success = toolBus.isToolResultSuccess(tc.name, raw)
+                ToolResult(success, raw, null)
+            } ?: ToolResult(false, "工具执行超时（${config.toolTimeoutMs / 1000}s）", "Timeout")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            ToolResult(false, "工具执行错误: ${e.message}", e.message)
+        }
+    }
+
+    /**
+     * 上下文窗口管理：当消息历史的估算 token 数超过限制时，
+     * 从早期消息开始截断，保留 system 消息和最近的对话。
+     * 确保不破坏 assistant(tool_calls) → tool 结果消息的配对。
+     */
+    private fun trimContextIfNeeded(conv: Conversation) {
+        val config = conv.config
+        val estimatedTokens = estimateTokens(conv.messages)
+        if (estimatedTokens <= config.contextTokenLimit) return
+
+        val msgs = conv.messages
+        if (msgs.size <= 4) return
+
+        // 目标保留条数（最近的一半）
+        val keepRecent = msgs.size / 2
+        // 候选截断点：从第 1 条之后开始（跳过第 0 条，通常是 system 或首条 user）
+        var cutEnd = msgs.size - keepRecent
+        if (cutEnd <= 1) return
+
+        // 向前调整截断点：不能在 assistant(tool_calls) 和 tool 之间断开
+        // 如果 cutEnd 处的消息是 tool 角色，向前回退到 tool_calls 的 assistant 消息之前
+        while (cutEnd > 1 && msgs[cutEnd].role == "tool") {
+            cutEnd--
+        }
+        // 如果 cutEnd 处的消息是 assistant 且带 tool_calls，也回退一条
+        if (cutEnd > 1 && msgs[cutEnd].role == "assistant" && msgs[cutEnd].toolCalls.isNotEmpty()) {
+            cutEnd--
+        }
+
+        if (cutEnd > 1) {
+            // subList(1, cutEnd) 即可安全移除
+            msgs.subList(1, cutEnd).clear()
+        }
+    }
+
+    /** 粗略估算消息列表的 token 数 (1 token ≈ 4 chars for English, ≈ 2 chars for CJK) */
+    private fun estimateTokens(messages: List<ChatHttpClient.ChatMessageDto>): Int {
+        return messages.sumOf { msg ->
+            val content = msg.content.orEmpty()
+            val toolCallsSize = msg.toolCalls.sumOf { it.arguments.length + it.name.length }
+            // 简化估算：英文约 4 chars/token，中文约 2 chars/token，取中间值 3
+            (content.length + toolCallsSize) / 3
+        }
+    }
+
     /** 中止当前对话 */
     fun abort() {
         current?.let { conv ->
@@ -216,12 +364,20 @@ class ConversationManager(
     }
 
     /** 重置对话（新会话） */
-    fun reset() {
+    suspend fun reset() = mutex.withLock {
         current = null
+        resetTokenUsage()
     }
 
     /** 从已有消息历史恢复对话 */
-    fun restoreFromMessages(messages: List<ChatHttpClient.ChatMessageDto>, config: ConvConfig) {
+    suspend fun restoreFromMessages(messages: List<ChatHttpClient.ChatMessageDto>, config: ConvConfig) = mutex.withLock {
         current = Conversation(config, messages.toMutableList())
     }
 }
+
+/** 结构化工具执行结果 */
+data class ToolResult(
+    val success: Boolean,
+    val output: String,
+    val error: String?
+)

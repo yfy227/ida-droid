@@ -15,6 +15,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
@@ -41,6 +43,7 @@ class PiRpcRuntime(
     private val seq = AtomicLong(0)
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false; isLenient = true }
     private val writeLock = Any()
+    private val startMutex = Mutex()
 
     @Volatile private var process: Process? = null
     @Volatile private var writer: BufferedWriter? = null
@@ -50,42 +53,59 @@ class PiRpcRuntime(
     fun isActive(): Boolean = process?.isAlive == true && !stopped
 
     suspend fun start() = withContext(Dispatchers.IO) {
-        if (isActive()) return@withContext
-        stopped = false
-        recentStderr = ""
-        emit(PiRuntimeEvent.Status("starting"))
+        val shouldWarmUp = startMutex.withLock {
+            // Re-check inside the lock so concurrent callers don't spawn a second process.
+            if (isActive()) {
+                false
+            } else {
+                stopped = false
+                recentStderr = ""
+                emit(PiRuntimeEvent.Status("starting"))
 
-        val command = buildStartScript(session)
-        val spec = proot.workspaceCommandSpec(command)
-        val started = ProcessBuilder(spec.command)
-            .directory(spec.workingDirectory)
-            .also { it.environment().putAll(spec.environment) }
-            .start()
-        process = started
-        writer = BufferedWriter(OutputStreamWriter(started.outputStream, Charsets.UTF_8))
+                val command = buildStartScript(session)
+                val spec = proot.workspaceCommandSpec(command)
+                val started = ProcessBuilder(spec.command)
+                    .directory(spec.workingDirectory)
+                    .also { it.environment().putAll(spec.environment) }
+                    .start()
+                process = started
+                writer = BufferedWriter(OutputStreamWriter(started.outputStream, Charsets.UTF_8))
 
-        pumpStdout(started)
-        pumpStderr(started)
-        waitForExit(started)
+                pumpStdout(started)
+                pumpStderr(started)
+                waitForExit(started)
 
-        emit(PiRuntimeEvent.Status("running"))
-        runCatching { getState(timeoutMs = 60_000) }
+                emit(PiRuntimeEvent.Status("running"))
+                true
+            }
+        }
+        // Best-effort warm-up query OUTSIDE the lock; otherwise getState()->send()->
+        // start() on a crashed process would re-enter the non-reentrant Mutex and deadlock.
+        if (shouldWarmUp) {
+            val warmup = runCatching { getState(timeoutMs = 60_000) }
+            // runCatching 会吞 CancellationException，重新抛出以保留取消信号
+            if (warmup.exceptionOrNull() is kotlinx.coroutines.CancellationException) {
+                throw warmup.exceptionOrNull()!!
+            }
+        }
     }
 
     suspend fun stop() = withContext(Dispatchers.IO) {
-        stopped = true
-        pending.forEach { (_, deferred) -> deferred.completeExceptionally(IllegalStateException("agent stopped")) }
-        pending.clear()
-        runCatching { writer?.close() }
-        writer = null
-        process?.let { proc ->
-            if (proc.isAlive) {
-                proc.destroy()
-                if (!proc.waitFor(2, TimeUnit.SECONDS)) proc.destroyForcibly()
+        startMutex.withLock {
+            stopped = true
+            pending.forEach { (_, deferred) -> deferred.completeExceptionally(IllegalStateException("agent stopped")) }
+            pending.clear()
+            runCatching { writer?.close() }
+            writer = null
+            process?.let { proc ->
+                if (proc.isAlive) {
+                    proc.destroy()
+                    if (!proc.waitFor(2, TimeUnit.SECONDS)) proc.destroyForcibly()
+                }
             }
+            process = null
+            emit(PiRuntimeEvent.Status("stopped"))
         }
-        process = null
-        emit(PiRuntimeEvent.Status("stopped"))
     }
 
     suspend fun prompt(message: String, images: List<ImagePayload> = emptyList(), streamingBehavior: String? = null): JsonElement {
@@ -108,7 +128,7 @@ class PiRpcRuntime(
 
     suspend fun steer(message: String): JsonElement = send(buildJsonObject { put("type", "steer"); put("message", message) }, timeoutMs = 1_800_000)
     suspend fun followUp(message: String): JsonElement = send(buildJsonObject { put("type", "follow_up"); put("message", message) }, timeoutMs = 1_800_000)
-    suspend fun abort(): JsonElement = send(buildJsonObject { put("type", "abort") }, timeoutMs = 10_000)
+    suspend fun abort(): JsonElement = send(buildJsonObject { put("type", "abort") }, timeoutMs = 5_000)
     suspend fun getState(timeoutMs: Long = 60_000): JsonElement = send(buildJsonObject { put("type", "get_state") }, timeoutMs = timeoutMs)
     suspend fun getMessages(): JsonElement = send(buildJsonObject { put("type", "get_messages") }, timeoutMs = 60_000)
     suspend fun getStats(): JsonElement = send(buildJsonObject { put("type", "get_session_stats") }, timeoutMs = 30_000)
@@ -124,11 +144,17 @@ class PiRpcRuntime(
         val payload = JsonObject(linkedMapOf("id" to JsonPrimitive(id)) + command)
         val deferred = CompletableDeferred<JsonElement>()
         pending[id] = deferred
-        synchronized(writeLock) {
-            val out = writer ?: throw IllegalStateException("agent runtime is not running")
-            out.write(payload.toString())
-            out.write("\n")
-            out.flush()
+        try {
+            synchronized(writeLock) {
+                val out = writer ?: throw IllegalStateException("agent runtime is not running")
+                out.write(payload.toString())
+                out.write("\n")
+                out.flush()
+            }
+        } catch (e: Exception) {
+            // 写入失败时必须清理 pending，否则条目永远残留导致内存泄漏
+            pending.remove(id)
+            throw e
         }
         val commandType = command["type"]?.jsonPrimitive?.contentOrNull ?: "unknown"
         try {
@@ -149,6 +175,10 @@ class PiRpcRuntime(
             }
             removed?.completeExceptionally(IllegalStateException(msg))
             throw IllegalStateException(msg, e)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // 协程被取消（通常是 abort），清理 pending 避免条目残留
+            pending.remove(id)
+            throw e
         }
     }
 
@@ -156,20 +186,21 @@ class PiRpcRuntime(
 
     private fun buildStartScript(session: AgentSessionRecord): String = buildString {
         val ws = configManager.workspaceProotPath()
-        appendLine("cd $ws")
-        appendLine("export PI_CODING_AGENT_DIR=$ws/.idadroid/pi-agent")
+        val quotedWs = IdaProotRuntime.shellQuote(ws)
+        appendLine("cd $quotedWs")
+        appendLine("export PI_CODING_AGENT_DIR=${IdaProotRuntime.shellQuote("$ws/.idadroid/pi-agent")}")
         appendLine("export PI_SKIP_VERSION_CHECK=1")
         appendLine("export PI_TELEMETRY=0")
         appendLine("export TERM=dumb")
         val envExports = configManager.runtimeEnvExports()
         if (envExports.isNotBlank()) appendLine(envExports)
-        appendLine("export NODE_OPTIONS=\"\${NODE_OPTIONS:-} --require $ws/.idadroid/pi-agent/rpc-stdio-guard.cjs\"")
+        appendLine("export NODE_OPTIONS=\"\${NODE_OPTIONS:-} --require ${IdaProotRuntime.shellQuote("$ws/.idadroid/pi-agent/rpc-stdio-guard.cjs")}\"")
         append("exec pi --mode rpc ")
         val sessionFile = session.sessionFile?.trim().orEmpty()
         if (sessionFile.isNotBlank()) {
             append("--session ").append(IdaProotRuntime.shellQuote(sessionFile)).append(' ')
         } else {
-            append("--session-dir $ws/.pi-sessions ")
+            append("--session-dir ${IdaProotRuntime.shellQuote("$ws/.pi-sessions")} ")
         }
         session.provider?.takeIf { it.isNotBlank() }?.let { rawProvider ->
             // pi agent 不认识 "custom" 和 "openai-generic"

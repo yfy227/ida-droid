@@ -33,7 +33,10 @@ class IdaMcpSessionManager(
     private val appContext = context.applicationContext
     private val runtime = IdaProotRuntime(appContext, paths = paths)
     private val fileTransferManager = FileTransferManager(appContext, paths)
-    private val fileTransferServer = FileTransferHttpServer(fileTransferManager)
+    private val fileTransferServer = FileTransferHttpServer(
+        manager = fileTransferManager,
+        idaMcpEndpointProvider = { currentIdaMcpEndpoint() }
+    )
     private val watchdogScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var watchdogJob: Job? = null
     @Volatile private var monitoringEnabled: Boolean = settingsStore?.mcpSettings?.value?.autoRestart ?: true
@@ -43,6 +46,47 @@ class IdaMcpSessionManager(
 
     /** Exposed so the UI can trigger host→container file transfers. */
     val transfers: FileTransferManager get() = fileTransferManager
+
+    /**
+     * Returns the ida-mcp HTTP endpoint when the server is running, or null when
+     * it is stopped. Used by [FileTransferHttpServer]'s `/api/open-in-ida` route
+     * so external tools can invoke `open_file` without knowing whether IDA MCP
+     * is currently up.
+     */
+    private fun currentIdaMcpEndpoint(): String? {
+        val state = _state.value
+        return if (state.status == IdaMcpStatus.Running) state.endpoint else null
+    }
+
+    /**
+     * One-shot convenience for the UI: search the host for [name] (or use
+     * [hostPath] directly if provided), transfer the file into the container,
+     * then call ida-mcp's `open_file` tool so IDA Pro opens it immediately.
+     *
+     * Returns a [Result] whose value is the ida-mcp tool's text response on
+     * success, or an exception describing which step failed.
+     */
+    suspend fun openInIda(name: String? = null, hostPath: String? = null): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(!name.isNullOrBlank() || !hostPath.isNullOrBlank()) {
+                "必须提供 name 或 hostPath"
+            }
+            val endpoint = currentIdaMcpEndpoint()
+                ?: error("IDA MCP 未运行，请先启动 IDA MCP HTTP 服务")
+            val entry = when {
+                !hostPath.isNullOrBlank() -> fileTransferManager.transferHostPath(hostPath)
+                else -> fileTransferManager.findAndTransferByName(name!!)
+                    ?: error("主机端未找到文件：$name")
+            }
+            IdaMcpClient(endpoint).openFile(entry.prootPath)
+        }.let { result ->
+            // runCatching 会吞掉 CancellationException，导致协程取消信号丢失。
+            // 检测到 CancellationException 时重新抛出，让父协程能正确取消。
+            val cause = result.exceptionOrNull()
+            if (cause is kotlinx.coroutines.CancellationException) throw cause
+            result
+        }
+    }
 
     private val _state = MutableStateFlow(
         IdaMcpSessionState(
@@ -250,11 +294,12 @@ class IdaMcpSessionManager(
 
     private fun buildStartCommand(settings: IdaMcpLaunchSettings): String = buildString {
         val idaHome = (settingsStore?.envSettings?.value?.idaHome ?: dev.idadroid.settings.IdaDroidSettings.DEFAULT_IDA_HOME).trimEnd('/')
+        val quotedHome = IdaProotRuntime.shellQuote(idaHome)
         appendLine("set -e")
-        appendLine("cd $idaHome")
-        appendLine("export IDADIR=$idaHome")
-        appendLine("export LD_LIBRARY_PATH=$idaHome:\${LD_LIBRARY_PATH:-}")
-        append("exec $idaHome/ida-mcp serve-http")
+        appendLine("cd $quotedHome")
+        appendLine("export IDADIR=$quotedHome")
+        appendLine("export LD_LIBRARY_PATH=$quotedHome:\${LD_LIBRARY_PATH:-}")
+        append("exec $quotedHome/ida-mcp serve-http")
         append(" --bind ").append(IdaProotRuntime.shellQuote(settings.bind))
         append(" --allow-origin ").append(IdaProotRuntime.shellQuote(settings.allowOrigin))
         if (settings.allowHost.isNotBlank()) {
@@ -268,10 +313,12 @@ class IdaMcpSessionManager(
 
     private fun buildStopCommand(settings: IdaMcpLaunchSettings): String {
         val idaHomeKill = (settingsStore?.envSettings?.value?.idaHome ?: dev.idadroid.settings.IdaDroidSettings.DEFAULT_IDA_HOME).trimEnd('/')
+        val pattern1 = IdaProotRuntime.shellQuote("$idaHomeKill/ida-mcp serve-http")
+        val pattern2 = IdaProotRuntime.shellQuote("ida-mcp serve-http --bind ${settings.bind}")
         return """
             set +e
-            pkill -f '${idaHomeKill}/ida-mcp serve-http' 2>/dev/null || true
-            pkill -f 'ida-mcp serve-http --bind ${settings.bind}' 2>/dev/null || true
+            pkill -f $pattern1 2>/dev/null || true
+            pkill -f $pattern2 2>/dev/null || true
         """.trimIndent()
     }
 

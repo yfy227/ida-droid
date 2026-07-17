@@ -152,7 +152,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
         scope.launch {
             loading = true
             error = null
-            runCatching { fileManager.listFiles(path) }
+            dev.idadroid.util.runCatchingSuspending { fileManager.listFiles(path) }
                 .onSuccess { entries = it }
                 .onFailure { error = it.message }
             loading = false
@@ -169,7 +169,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
         scope.launch {
             loading = true
             error = null
-            runCatching { uris.forEach { uri -> fileManager.uploadFile(path, uri) } }
+            dev.idadroid.util.runCatchingSuspending { uris.forEach { uri -> fileManager.uploadFile(path, uri) } }
                 .onFailure { error = "上传失败：${it.message}" }
             loading = false
             reload()
@@ -183,7 +183,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
         scope.launch {
             loading = true
             error = null
-            runCatching { fileManager.saveFileAs(entry.path, uri) }
+            dev.idadroid.util.runCatchingSuspending { fileManager.saveFileAs(entry.path, uri) }
                 .onFailure { error = "另存为失败：${it.message}" }
             loading = false
         }
@@ -193,7 +193,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
         if (entry.type != "file") return
         scope.launch {
             error = null
-            runCatching { fileManager.fileForSharing(entry.path) }
+            dev.idadroid.util.runCatchingSuspending { fileManager.fileForSharing(entry.path) }
                 .onSuccess { file ->
                     runCatching { RootfsFileSharing.openFile(context, file) }
                         .onFailure { error = "打开失败：${it.message}" }
@@ -258,7 +258,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
                                     }
                                     TextButton(onClick = {
                                         scope.launch {
-                                            runCatching { fileManager.importInstalledApk(app.packageName, app.label, app.sourceDir, path) }
+                                            dev.idadroid.util.runCatchingSuspending { fileManager.importInstalledApk(app.packageName, app.label, app.sourceDir, path) }
                                                 .onSuccess { reload(); showApps = false }
                                                 .onFailure { error = "导入 APK 失败：${it.message}" }
                                         }
@@ -361,7 +361,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
                         if (!isSafeContainerFileName(name)) { error = "名称不能包含 /、\\ 或 .."; return@Button }
                         scope.launch {
                             error = null
-                            runCatching {
+                            dev.idadroid.util.runCatchingSuspending {
                                 val target = createTargetPath(name)
                                 if (kind == "dir") {
                                     fileManager.createDirectory(target)

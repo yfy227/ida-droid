@@ -96,37 +96,40 @@ class AiConfigTools(
                 }
             }
 
-            val testModel = modelId ?: defaultModelForProvider(providerId)
-            val requestBody = if (providerId == "anthropic") {
-                """{"model":"$testModel","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"""
-            } else {
-                """{"model":"$testModel","max_tokens":1,"messages":[{"role":"user","content":"hi"}],"stream":false}"""
+            try {
+                val testModel = modelId ?: defaultModelForProvider(providerId)
+                val requestBody = if (providerId == "anthropic") {
+                    """{"model":"$testModel","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"""
+                } else {
+                    """{"model":"$testModel","max_tokens":1,"messages":[{"role":"user","content":"hi"}],"stream":false}"""
+                }
+
+                conn.outputStream.use { it.write(requestBody.toByteArray()) }
+
+                val code = conn.responseCode
+                val responseBody = if (code in 200..299) {
+                    conn.inputStream.bufferedReader().use { it.readText() }
+                } else {
+                    conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                }
+
+                val success = code in 200..299
+                val message = if (success) "连接成功"
+                    else extractErrorMessage(responseBody) ?: "HTTP $code"
+
+                // Anthropic 400 可能是模型名过期但 Key 有效
+                val effectiveSuccess = success || (providerId == "anthropic" && code == 400)
+                val effectiveMessage = if (providerId == "anthropic" && code == 400 && !success)
+                    "连接成功（Key 有效，模型可能需要更新）" else message
+
+                TestResult(
+                    success = effectiveSuccess,
+                    httpCode = code,
+                    message = effectiveMessage
+                )
+            } finally {
+                conn.disconnect()
             }
-
-            conn.outputStream.use { it.write(requestBody.toByteArray()) }
-
-            val code = conn.responseCode
-            val responseBody = if (code in 200..299) {
-                conn.inputStream.bufferedReader().use { it.readText() }
-            } else {
-                conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
-            }
-            conn.disconnect()
-
-            val success = code in 200..299
-            val message = if (success) "连接成功"
-                else extractErrorMessage(responseBody) ?: "HTTP $code"
-
-            // Anthropic 400 可能是模型名过期但 Key 有效
-            val effectiveSuccess = success || (providerId == "anthropic" && code == 400)
-            val effectiveMessage = if (providerId == "anthropic" && code == 400 && !success)
-                "连接成功（Key 有效，模型可能需要更新）" else message
-
-            TestResult(
-                success = effectiveSuccess,
-                httpCode = code,
-                message = effectiveMessage
-            )
         }
     }
 
@@ -142,21 +145,24 @@ class AiConfigTools(
             readTimeout = 30_000
             requestMethod = "GET"
         }
-        val code = conn.responseCode
-        val body = if (code in 200..299) {
-            conn.inputStream.bufferedReader().use { it.readText() }
-        } else {
-            conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
-        }
-        conn.disconnect()
+        try {
+            val code = conn.responseCode
+            val body = if (code in 200..299) {
+                conn.inputStream.bufferedReader().use { it.readText() }
+            } else {
+                conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+            }
 
-        val models = if (code in 200..299) parseModelList(body, "google") else emptyList()
-        return TestResult(
-            success = code in 200..299,
-            httpCode = code,
-            message = if (code in 200..299) "连接成功" else extractErrorMessage(body) ?: "HTTP $code",
-            availableModels = models
-        )
+            val models = if (code in 200..299) parseModelList(body, "google") else emptyList()
+            return TestResult(
+                success = code in 200..299,
+                httpCode = code,
+                message = if (code in 200..299) "连接成功" else extractErrorMessage(body) ?: "HTTP $code",
+                availableModels = models
+            )
+        } finally {
+            conn.disconnect()
+        }
     }
 
     /**
@@ -204,15 +210,18 @@ class AiConfigTools(
                 }
             }
 
-            val code = conn.responseCode
-            val body = if (code in 200..299) {
-                conn.inputStream.bufferedReader().use { it.readText() }
-            } else {
-                error("HTTP $code: ${conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""}")
-            }
-            conn.disconnect()
+            try {
+                val code = conn.responseCode
+                val body = if (code in 200..299) {
+                    conn.inputStream.bufferedReader().use { it.readText() }
+                } else {
+                    error("HTTP $code: ${conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""}")
+                }
 
-            parseModelList(body, providerId)
+                parseModelList(body, providerId)
+            } finally {
+                conn.disconnect()
+            }
         }
     }
 

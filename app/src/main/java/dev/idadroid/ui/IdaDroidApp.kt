@@ -129,7 +129,11 @@ fun IdaDroidApp() {
                 if (uris.isNotEmpty()) {
                     scope.launch {
                         val loaded = uris.mapNotNull { uri ->
-                            runCatching { agentManager.readDraftAttachment(uri) }
+                            val result = runCatching { agentManager.readDraftAttachment(uri) }
+                            // runCatching 会吞 CancellationException，重新抛出以保留取消信号
+                            val cause = result.exceptionOrNull()
+                            if (cause is kotlinx.coroutines.CancellationException) throw cause
+                            result
                                 .onFailure { error -> transientMessage = "读取附件失败：${error.message}" }
                                 .getOrNull()
                         }
@@ -141,13 +145,41 @@ fun IdaDroidApp() {
             val mcpUploadPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
                 if (uri != null) {
                     scope.launch {
-                        runCatching { mcpManager.transfers.transferUri(uri) }
+                        val uploadResult = runCatching { mcpManager.transfers.transferUri(uri) }
+                        // runCatching 会吞 CancellationException，重新抛出以保留取消信号
+                        val uploadCause = uploadResult.exceptionOrNull()
+                        if (uploadCause is kotlinx.coroutines.CancellationException) throw uploadCause
+                        uploadResult
                             .onSuccess { entry ->
                                 transientMessage = "已上传到 MCP: ${entry.name} → ${entry.prootPath}"
                             }
                             .onFailure { error ->
                                 transientMessage = "MCP 上传失败: ${error.message}"
                             }
+                    }
+                }
+            }
+
+            val openInIdaPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                if (uri != null) {
+                    scope.launch {
+                        transientMessage = "正在传输并在 IDA 中打开…"
+                        // 先把文件传进容器，拿到容器内路径，再调用 ida-mcp open_file
+                        val entry = runCatching { mcpManager.transfers.transferUri(uri) }
+                        // runCatching 会吞 CancellationException，重新抛出以保留取消信号
+                        val entryCause = entry.exceptionOrNull()
+                        if (entryCause is kotlinx.coroutines.CancellationException) throw entryCause
+                        entry.onSuccess { e ->
+                            mcpManager.openInIda(hostPath = e.hostPath)
+                                .onSuccess { toolResult ->
+                                    transientMessage = "已在 IDA 中打开：${toolResult.take(120)}"
+                                }
+                                .onFailure { error ->
+                                    transientMessage = "在 IDA 中打开失败：${error.message}"
+                                }
+                        }.onFailure { error ->
+                            transientMessage = "文件传输失败：${error.message}"
+                        }
                     }
                 }
             }
@@ -284,13 +316,20 @@ fun IdaDroidApp() {
                     onUploadToMcp = {
                         mcpUploadPicker.launch(arrayOf("*/*"))
                     },
+                    onOpenInIda = {
+                        openInIdaPicker.launch(arrayOf("*/*"))
+                    },
                     onRevalidate = {
                         scope.launch {
                             validationBusy = true
                             transientMessage = null
-                            runCatching { manager.revalidate() }
+                            val revalidateResult = runCatching { manager.revalidate() }
+                            // runCatching 会吞 CancellationException，重新抛出以保留取消信号
+                            val revalidateCause = revalidateResult.exceptionOrNull()
+                            if (revalidateCause is kotlinx.coroutines.CancellationException) throw revalidateCause
+                            revalidateResult
                                 .onSuccess { report ->
-                                    transientMessage = if (report.ok) "验证通过" else "验证失败：${report.fatal.joinToString("；")}" 
+                                    transientMessage = if (report.ok) "验证通过" else "验证失败：${report.fatal.joinToString("；")}"
                                 }
                                 .onFailure { error -> transientMessage = "验证异常：${error.message}" }
                             validationBusy = false

@@ -708,9 +708,13 @@ private fun testOpenAiStyle(provider: ProviderConfig): TestResult {
         requestMethod = "GET"; connectTimeout = 10_000; readTimeout = 15_000
         setRequestProperty("Authorization", "Bearer ${provider.apiKey}")
     }
-    val code = conn.responseCode; val body = readBody(conn, code)
-    return if (code in 200..299) TestResult(true, code, "连接成功", parseModels(body))
-    else TestResult(false, code, parseError(body) ?: "HTTP $code")
+    try {
+        val code = conn.responseCode; val body = readBody(conn, code)
+        return if (code in 200..299) TestResult(true, code, "连接成功", parseModels(body))
+        else TestResult(false, code, parseError(body) ?: "HTTP $code")
+    } finally {
+        conn.disconnect()
+    }
 }
 
 private fun testAnthropic(provider: ProviderConfig): TestResult {
@@ -722,13 +726,17 @@ private fun testAnthropic(provider: ProviderConfig): TestResult {
         setRequestProperty("x-api-key", provider.apiKey); setRequestProperty("anthropic-version", "2023-06-01")
         setRequestProperty("Content-Type", "application/json")
     }
-    conn.outputStream.use { it.write(body.toByteArray()) }
-    val code = conn.responseCode; val resp = readBody(conn, code)
-    return when {
-        code in 200..299 -> TestResult(true, code, "连接成功")
-        code == 400 -> TestResult(true, code, "连接成功（Key 有效，模型可能需要更新）")
-        code == 401 || code == 403 -> TestResult(false, code, "API Key 无效")
-        else -> TestResult(false, code, parseError(resp) ?: "HTTP $code")
+    try {
+        conn.outputStream.use { it.write(body.toByteArray()) }
+        val code = conn.responseCode; val resp = readBody(conn, code)
+        return when {
+            code in 200..299 -> TestResult(true, code, "连接成功")
+            code == 400 -> TestResult(true, code, "连接成功（Key 有效，模型可能需要更新）")
+            code == 401 || code == 403 -> TestResult(false, code, "API Key 无效")
+            else -> TestResult(false, code, parseError(resp) ?: "HTTP $code")
+        }
+    } finally {
+        conn.disconnect()
     }
 }
 
@@ -736,9 +744,13 @@ private fun testGemini(provider: ProviderConfig): TestResult {
     val base = provider.baseUrl.trim().removeSuffix("/")
     val url = if (base.contains("/v1beta")) "$base/models?key=${provider.apiKey}" else "$base/v1beta/models?key=${provider.apiKey}"
     val conn = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply { requestMethod = "GET"; connectTimeout = 10_000; readTimeout = 15_000 }
-    val code = conn.responseCode; val body = readBody(conn, code)
-    return if (code in 200..299) TestResult(true, code, "连接成功", parseGeminiModels(body))
-    else TestResult(false, code, parseError(body) ?: "HTTP $code")
+    try {
+        val code = conn.responseCode; val body = readBody(conn, code)
+        return if (code in 200..299) TestResult(true, code, "连接成功", parseGeminiModels(body))
+        else TestResult(false, code, parseError(body) ?: "HTTP $code")
+    } finally {
+        conn.disconnect()
+    }
 }
 
 private fun readBody(conn: java.net.HttpURLConnection, code: Int): String =
@@ -774,23 +786,38 @@ private fun fetchOpenAi(provider: ProviderConfig): List<String> {
     val base = provider.baseUrl.trim().removeSuffix("/")
     val url = when { base.contains("/chat/completions") -> base.removeSuffix("/chat/completions") + "/models"; base.endsWith("/v1") -> base + "/models"; base.contains("/v1/") -> base.substringBefore("/v1/") + "/v1/models"; else -> base + "/v1/models" }
     val conn = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply { requestMethod = "GET"; connectTimeout = 10_000; readTimeout = 15_000; setRequestProperty("Authorization", "Bearer ${provider.apiKey}") }
-    if (conn.responseCode !in 200..299) return emptyList()
-    val body = conn.inputStream.bufferedReader().use { it.readText() }; conn.disconnect(); return parseModels(body)
+    try {
+        if (conn.responseCode !in 200..299) return emptyList()
+        val body = conn.inputStream.bufferedReader().use { it.readText() }
+        return parseModels(body)
+    } finally {
+        conn.disconnect()
+    }
 }
 
 private fun fetchAnthropic(provider: ProviderConfig): List<String> {
     val base = provider.baseUrl.trim().removeSuffix("/").removeSuffix("/v1")
     val conn = (java.net.URL("$base/v1/models").openConnection() as java.net.HttpURLConnection).apply { requestMethod = "GET"; connectTimeout = 10_000; readTimeout = 15_000; setRequestProperty("x-api-key", provider.apiKey); setRequestProperty("anthropic-version", "2023-06-01") }
-    if (conn.responseCode !in 200..299) return emptyList()
-    val body = conn.inputStream.bufferedReader().use { it.readText() }; conn.disconnect(); return parseModels(body)
+    try {
+        if (conn.responseCode !in 200..299) return emptyList()
+        val body = conn.inputStream.bufferedReader().use { it.readText() }
+        return parseModels(body)
+    } finally {
+        conn.disconnect()
+    }
 }
 
 private fun fetchGemini(provider: ProviderConfig): List<String> {
     val base = provider.baseUrl.trim().removeSuffix("/")
     val url = if (base.contains("/v1beta")) "$base/models?key=${provider.apiKey}" else "$base/v1beta/models?key=${provider.apiKey}"
     val conn = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply { requestMethod = "GET"; connectTimeout = 10_000; readTimeout = 15_000 }
-    if (conn.responseCode !in 200..299) return emptyList()
-    val body = conn.inputStream.bufferedReader().use { it.readText() }; conn.disconnect(); return parseGeminiModels(body)
+    try {
+        if (conn.responseCode !in 200..299) return emptyList()
+        val body = conn.inputStream.bufferedReader().use { it.readText() }
+        return parseGeminiModels(body)
+    } finally {
+        conn.disconnect()
+    }
 }
 
 // ─── Config export / import ────────────────────────────────────────────────────

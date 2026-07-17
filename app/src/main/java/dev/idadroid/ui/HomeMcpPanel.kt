@@ -49,7 +49,8 @@ fun McpFunctionPanel(
     onShowMcpLog: () -> Unit,
     onToggleMonitoring: (Boolean) -> Unit = {},
     onHealthCheck: () -> Unit = {},
-    onUploadToMcp: () -> Unit = {}
+    onUploadToMcp: () -> Unit = {},
+    onOpenInIda: () -> Unit = {}
 ) {
     var settings by remember(mcpState.settings) { mutableStateOf(mcpState.settings) }
     val running = mcpState.status == IdaMcpStatus.Running
@@ -175,6 +176,15 @@ fun McpFunctionPanel(
                         Icon(Icons.Rounded.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
                         Text("上传文件到 MCP")
+                    }
+                    OutlinedButton(
+                        onClick = onOpenInIda,
+                        enabled = running,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Rounded.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (running) "选择文件并在 IDA 中打开" else "需先启动 IDA MCP 才能快速打开")
                     }
                 }
             }

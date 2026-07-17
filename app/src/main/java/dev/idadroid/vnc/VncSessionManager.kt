@@ -331,7 +331,7 @@ class VncSessionManager(
         }
 
         start_ida() {
-          cd ${idaHome} 2>/dev/null || { echo "No ${idaHome}" >>"${'$'}log"; return 1; }
+          cd ${IdaProotRuntime.shellQuote(idaHome)} 2>/dev/null || { echo "No $idaHome" >>"${'$'}log"; return 1; }
           for bin in ./ida ./ida64 ./idat ./idat64; do
             if [ -x "${'$'}bin" ]; then
               "${'$'}bin" >>"${'$'}log" 2>&1 &
@@ -414,7 +414,7 @@ class VncSessionManager(
         done
         pkill -f "x11vnc.*-rfbport ${'$'}VNC_PORT" 2>/dev/null || true
         pkill -f "Xtigervnc.*:${'$'}display_num" 2>/dev/null || true
-        pkill -f "${idaHome}/ida" 2>/dev/null || true
+        pkill -f ${IdaProotRuntime.shellQuote("$idaHome/ida")} 2>/dev/null || true
         rm -f "/tmp/.X${'$'}{display_num}-lock" "/tmp/.X11-unix/X${'$'}display_num" 2>/dev/null || true
         echo "Stopped" >>"${'$'}log"
     """.trimIndent() + "\n"

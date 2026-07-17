@@ -246,7 +246,13 @@ fun BoxedAgentLikeScreen(
     val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
         scope.launch {
-            val picked = uris.mapNotNull { uri -> runCatching { manager.readDraftAttachment(uri) }.getOrNull() }
+            val picked = uris.mapNotNull { uri ->
+                val result = runCatching { manager.readDraftAttachment(uri) }
+                // runCatching 会吞 CancellationException，重新抛出以保留取消信号
+                val cause = result.exceptionOrNull()
+                if (cause is kotlinx.coroutines.CancellationException) throw cause
+                result.getOrNull()
+            }
             attachments = attachments + picked
             val refs = picked.joinToString(" ") { manager.fileRef("/root/pi_workspace/.upload/${it.name}") }
             text = appendComposerText(text, refs)
@@ -372,7 +378,7 @@ fun BoxedAgentLikeScreen(
                             }
                         )
                     }
-                    if (agentState.isWorking) item { ProcessingCard() }
+                    if (agentState.isWorking) item { ProcessingCard(agentState.status, agentState.processingPhase, agentState.waitDurationMs) }
                     item { Spacer(Modifier.height(1.dp)) }
                 }
                 ScrollQuickActions(
@@ -1253,7 +1259,7 @@ private fun WelcomePrompts(onPrompt: (String) -> Unit) {
 }
 
 @Composable
-private fun ProcessingCard() {
+private fun ProcessingCard(status: String = "working", phase: String? = null, waitMs: Long = 0L) {
     val infiniteTransition = rememberInfiniteTransition(label = "processing")
     val alpha by infiniteTransition.animateFloat(
         initialValue = 0.3f,
@@ -1261,10 +1267,18 @@ private fun ProcessingCard() {
         animationSpec = infiniteRepeatable(animation = tween(800, easing = LinearEasing), repeatMode = RepeatMode.Reverse),
         label = "pulse"
     )
+    val label = when {
+        status == "starting" -> "正在启动 Agent 进程…"
+        phase == "connecting" -> "正在等待 Agent 响应…"
+        phase == "receiving" -> if (waitMs > 0L) "正在接收回复（等待 ${waitMs / 1000}.${(waitMs % 1000) / 100}s）…" else "正在接收回复…"
+        phase == "executing_tool" -> "正在执行工具调用…"
+        phase == "compacting" -> "正在压缩上下文…"
+        else -> "pi 正在处理…"
+    }
     Surface(color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f), contentColor = MaterialTheme.colorScheme.onSecondaryContainer, shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
         Row(Modifier.padding(horizontal = 14.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.primary)
-            Text("pi 正在处理…", fontWeight = FontWeight.SemiBold, modifier = Modifier.graphicsLayer { this.alpha = alpha })
+            Text(label, fontWeight = FontWeight.SemiBold, modifier = Modifier.graphicsLayer { this.alpha = alpha })
         }
     }
 }
@@ -2582,11 +2596,11 @@ private fun FileBrowserTab(manager: PiAgentManager, onInsertComposer: (String) -
     var saveAsEntry by remember { mutableStateOf<FileEntry?>(null) }
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
-    fun reload() { scope.launch { loading = true; error = null; runCatching { manager.listFiles(path) }.onSuccess { entries = it }.onFailure { error = it.message }; loading = false } }
+    fun reload() { scope.launch { loading = true; error = null; dev.idadroid.util.runCatchingSuspending { manager.listFiles(path) }.onSuccess { entries = it }.onFailure { error = it.message }; loading = false } }
     LaunchedEffect(path) { reload() }
-    val pickUpload = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> scope.launch { uris.mapNotNull { runCatching { manager.readDraftAttachment(it) }.getOrNull() }.forEach { manager.uploadFile(path, it) }; reload() } }
-    val saveAsLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri -> val entry = saveAsEntry; saveAsEntry = null; if (uri != null && entry != null) scope.launch { loading = true; error = null; runCatching { manager.saveFileAs(entry.path, uri) }.onFailure { error = "另存为失败：${it.message}" }; loading = false } }
-    fun openFile(entry: FileEntry) { if (entry.type != "file") return; scope.launch { error = null; runCatching { manager.fileForSharing(entry.path) }.onSuccess { file -> runCatching { RootfsFileSharing.openFile(context, file) }.onFailure { error = "打开失败：${it.message}" } }.onFailure { error = "打开失败：${it.message}" } } }
+    val pickUpload = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> scope.launch { uris.mapNotNull { dev.idadroid.util.runCatchingSuspending { manager.readDraftAttachment(it) }.getOrNull() }.forEach { manager.uploadFile(path, it) }; reload() } }
+    val saveAsLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri -> val entry = saveAsEntry; saveAsEntry = null; if (uri != null && entry != null) scope.launch { loading = true; error = null; dev.idadroid.util.runCatchingSuspending { manager.saveFileAs(entry.path, uri) }.onFailure { error = "另存为失败：${it.message}" }; loading = false } }
+    fun openFile(entry: FileEntry) { if (entry.type != "file") return; scope.launch { error = null; dev.idadroid.util.runCatchingSuspending { manager.fileForSharing(entry.path) }.onSuccess { file -> runCatching { RootfsFileSharing.openFile(context, file) }.onFailure { error = "打开失败：${it.message}" } }.onFailure { error = "打开失败：${it.message}" } } }
     fun saveAs(entry: FileEntry) { if (entry.type != "file") return; saveAsEntry = entry; saveAsLauncher.launch(entry.name) }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) { FilledTonalIconButton(onClick = { path = parentPath(path) }, modifier = Modifier.size(36.dp)) { Icon(Icons.Rounded.ArrowUpward, contentDescription = "上级", modifier = Modifier.size(19.dp)) }; FilledTonalIconButton(onClick = { reload() }, modifier = Modifier.size(36.dp)) { Icon(Icons.Rounded.Refresh, contentDescription = "刷新", modifier = Modifier.size(19.dp)) }; FilledTonalButton(onClick = { pickUpload.launch(arrayOf("*/*")) }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Icon(Icons.Rounded.Upload, contentDescription = null, modifier = Modifier.size(17.dp)); Spacer(Modifier.width(4.dp)); Text("上传", fontSize = 13.sp) }; OutlinedButton(onClick = { createKind = "file"; createName = "" }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Icon(Icons.AutoMirrored.Rounded.NoteAdd, contentDescription = null, modifier = Modifier.size(17.dp)); Spacer(Modifier.width(4.dp)); Text("文件", fontSize = 13.sp) }; OutlinedButton(onClick = { createKind = "dir"; createName = "" }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) { Icon(Icons.Rounded.CreateNewFolder, contentDescription = null, modifier = Modifier.size(17.dp)); Spacer(Modifier.width(4.dp)); Text("目录", fontSize = 13.sp) } }
