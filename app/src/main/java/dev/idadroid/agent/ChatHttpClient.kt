@@ -1,12 +1,10 @@
 package dev.idadroid.agent
 
-import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -151,7 +149,7 @@ class ChatHttpClient(
             var connection: HttpURLConnection? = null
 
             try {
-                connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
                     connectTimeout = 30_000
                     readTimeout = 300_000  // 5 分钟读超时（流式模式不会真的等这么久）
@@ -162,10 +160,11 @@ class ChatHttpClient(
                     setRequestProperty("Accept", "text/event-stream")
                     outputStream.write(json.encodeToString(JsonObject.serializer(), requestBody).toByteArray())
                 }
+                connection = conn
 
-                val responseCode = connection.responseCode
+                val responseCode = conn.responseCode
                 if (responseCode !in 200..299) {
-                    val errorBody = connection.errorStream?.bufferedReader()?.use { it.readText() }
+                    val errorBody = conn.errorStream?.bufferedReader()?.use { it.readText() }
                         ?: "HTTP $responseCode"
                     val parsedError = parseApiError(errorBody, responseCode)
                     lastError = StreamEvent.Error(parsedError, responseCode, isRetryableHttp(responseCode))
@@ -174,14 +173,14 @@ class ChatHttpClient(
                         shouldRetry = true
                         retryReason = "HTTP $responseCode"
                         // 429 Too Many Requests: 尝试读取 Retry-After header
-                        val retryAfter = connection.getHeaderField("Retry-After")?.toIntOrNull()
+                        val retryAfter = conn.getHeaderField("Retry-After")?.toIntOrNull()
                         if (retryAfter != null) {
                             retryDelay = (retryAfter * 1000L).coerceAtMost(MAX_RETRY_DELAY_MS)
                         }
                     }
                 } else {
                     // SSE 流式读取
-                    val streamResult = readSSEStream(connection!!)
+                    val streamResult = readSSEStream(conn)
                     var hasEmitted = false
 
                     streamResult.events.forEach { event ->

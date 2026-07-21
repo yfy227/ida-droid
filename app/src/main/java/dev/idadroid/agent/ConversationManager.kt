@@ -11,7 +11,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -316,7 +315,8 @@ class ConversationManager(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            ToolResult(false, "工具执行错误: ${e.message}", e.message)
+            val msg = e.message ?: e::class.simpleName ?: "未知错误"
+            ToolResult(false, "工具执行错误: $msg", msg)
         }
     }
 

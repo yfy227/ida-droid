@@ -54,7 +54,6 @@ class PiAgentManager(
     private val deepIndexToolChain = dev.idadroid.deepindex.DeepIndexToolChain(appContext, paths)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false; isLenient = true }
-    private val runtimes = java.util.concurrent.ConcurrentHashMap<String, PiRpcRuntime>()
     // Send lock: prevents concurrent sendPrompt calls from racing. Operit uses
     // a similar coordination pattern in MessageCoordinationDelegate.
     private val sendMutex = kotlinx.coroutines.sync.Mutex()
@@ -87,41 +86,44 @@ class PiAgentManager(
             _state.value = AgentUiState(activity = "rootfs 未导入")
             return
         }
-        val store = repo.loadStore()
-        val defaultSnapshot = if (createDefaultIfReady && store.sessions.isEmpty()) configManager.readSnapshot() else null
-        val defaultPair = defaultSnapshot?.let(::resolveDefaultModel)
-        val defaultProvider = defaultSnapshot?.defaultProvider?.trim()?.takeIf { it.isNotBlank() }
-        val defaultModel = defaultSnapshot?.defaultModel?.trim()?.takeIf { it.isNotBlank() }
-        val defaultThinking = defaultSnapshot?.defaultThinkingLevel?.trim()?.takeIf { it.isNotBlank() }
-        val active = when {
-            store.activeSessionId != null && store.sessions.any { it.id == store.activeSessionId } -> store.activeSessionId
-            store.sessions.isNotEmpty() -> store.sessions.first().id
-            createDefaultIfReady -> repo.ensureDefaultSession(
-                provider = defaultProvider ?: defaultPair?.provider,
-                model = defaultModel ?: defaultPair?.id,
-                thinkingLevel = defaultThinking
-            ).id
-            else -> null
-        }
-        val sessions = store.sessions
-        _state.update { old ->
-            val activeSession = sessions.firstOrNull { it.id == active }
-            old.copy(
-                sessions = sessions,
-                activeSessionId = active,
-                status = activeSession?.status ?: "idle",
-                error = activeSession?.error,
-                modelLabel = modelLabel(activeSession),
-                piConfig = configManager.readSnapshot(),
-                activity = if (active == null) "点击新建 Session 开始" else old.activity,
-                workspace = old.workspace.copy(
-                    hasWorkspace = workspaceManager.hasWorkspace,
-                    workspaceName = workspaceManager.currentWorkspaceName,
-                    workspaceUri = workspaceManager.currentWorkspaceUri?.toString().orEmpty()
+        // 文件 IO 切到 IO 线程，避免主线程阻塞
+        scope.launch {
+            val store = repo.loadStore()
+            val snapshot = configManager.readSnapshot()
+            val defaultPair = if (createDefaultIfReady && store.sessions.isEmpty()) resolveDefaultModel(snapshot) else null
+            val defaultProvider = defaultPair?.provider ?: snapshot.defaultProvider.trim().takeIf { it.isNotBlank() }
+            val defaultModel = defaultPair?.id ?: snapshot.defaultModel.trim().takeIf { it.isNotBlank() }
+            val defaultThinking = snapshot.defaultThinkingLevel.trim().takeIf { it.isNotBlank() }
+            val active = when {
+                store.activeSessionId != null && store.sessions.any { it.id == store.activeSessionId } -> store.activeSessionId
+                store.sessions.isNotEmpty() -> store.sessions.first().id
+                createDefaultIfReady -> repo.ensureDefaultSession(
+                    provider = defaultProvider,
+                    model = defaultModel,
+                    thinkingLevel = defaultThinking
+                ).id
+                else -> null
+            }
+            val sessions = store.sessions
+            _state.update { old ->
+                val activeSession = sessions.firstOrNull { it.id == active }
+                old.copy(
+                    sessions = sessions,
+                    activeSessionId = active,
+                    status = activeSession?.status ?: "idle",
+                    error = activeSession?.error,
+                    modelLabel = modelLabel(activeSession),
+                    piConfig = snapshot,
+                    activity = if (active == null) "点击新建 Session 开始" else old.activity,
+                    workspace = old.workspace.copy(
+                        hasWorkspace = workspaceManager.hasWorkspace,
+                        workspaceName = workspaceManager.currentWorkspaceName,
+                        workspaceUri = workspaceManager.currentWorkspaceUri?.toString().orEmpty()
+                    )
                 )
-            )
+            }
+            active?.let { loadMessages(it) }
         }
-        active?.let { loadMessages(it) }
     }
 
     fun createSession(name: String = "") {
@@ -167,7 +169,6 @@ class PiAgentManager(
         scope.launch {
             runCatching {
                 conversationManager.abort()
-                runtimes.remove(id)?.stop()
                 repo.deleteSession(id)
             }.onSuccess { refresh(createDefaultIfReady = true) }
                 .onFailure { error -> setError("删除 Session 失败：${error.message}") }
@@ -195,19 +196,19 @@ class PiAgentManager(
     }
 
     fun sendPrompt(text: String, attachments: List<DraftAttachment> = emptyList(), sendMode: String? = null) {
-        // Guard: drop the call if a send is already in flight. This prevents
-        // double-tap races where the user hits the send button twice quickly
-        // and two prompts get queued into the RPC runtime simultaneously.
-        if (sendingInProgress) {
-            _state.update { it.copy(activity = "上一条消息仍在发送中，请稍候…") }
-            return
-        }
         scope.launch {
-            sendingInProgress = true
-            try {
-                sendPromptInternal(text, attachments, sendMode)
-            } finally {
-                sendingInProgress = false
+            // 用 sendMutex 串行化发送，消除 sendingInProgress 检查和实际发送之间的竞态
+            sendMutex.withLock {
+                if (sendingInProgress) {
+                    _state.update { it.copy(activity = "上一条消息仍在发送中，请稍候…") }
+                    return@withLock
+                }
+                sendingInProgress = true
+                try {
+                    sendPromptInternal(text, attachments, sendMode)
+                } finally {
+                    sendingInProgress = false
+                }
             }
         }
     }
@@ -220,8 +221,8 @@ class PiAgentManager(
         }
         val trimmed = text.trimEnd()
         if (trimmed.isBlank() && attachments.isEmpty()) return
-        sendMutex.withLock {
-            try {
+        // sendMutex 已在 sendPrompt 中获取，这里直接执行
+        try {
                 val session = repo.setActive(sessionId)
                 val stored = attachmentManager.storeAttachments(attachments)
                 val uploadedPaths = stored.map { it.prootPath }
@@ -246,7 +247,7 @@ class PiAgentManager(
                         setTurnActive(sessionId, false)
                         appendMessage(ChatMessage(newMessageId(), "system", "配置缺失：请先在设置中配置 API Key 和 Base URL", System.currentTimeMillis()))
                         setError("配置缺失：请先在设置中配置 API Key 和 Base URL")
-                        return@withLock
+                        return
                     }
 
                 val expanded = attachmentManager.expandFileReferencesForPrompt(displayMessage, session.cwd)
@@ -282,7 +283,6 @@ class PiAgentManager(
                 appendMessage(ChatMessage(newMessageId(), "system", "发送失败：$msg", System.currentTimeMillis()))
                 setError("发送失败：$msg")
             }
-        }
     }
 
     fun abort(id: String? = null) {

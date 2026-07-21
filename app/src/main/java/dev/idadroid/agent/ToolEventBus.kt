@@ -29,7 +29,13 @@ class ToolEventBus(
     private val proot: IdaProotRuntime,
     private val paths: EnvironmentPaths
 ) {
+    private val appContext = context.applicationContext
+    private val settings = dev.idadroid.settings.IdaDroidSettings(appContext)
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+    private val workspaceProotRel: String get() {
+        val ws = settings.envSettings.value.workspacePath.ifBlank { dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH }
+        return ws.removePrefix("/").ifBlank { "root/pi_workspace" }
+    }
 
     /**
      * 返回所有可用工具的 OpenAI function calling 定义。
@@ -137,7 +143,7 @@ class ToolEventBus(
         val args = try {
             json.parseToJsonElement(argsJson).jsonObject
         } catch (e: Exception) {
-            return@withContext "错误: 参数解析失败: ${e.message}"
+            return@withContext "错误: 参数解析失败: ${e.message ?: e::class.simpleName ?: "未知错误"}"
         }
 
         when (toolName) {
@@ -183,7 +189,7 @@ class ToolEventBus(
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            "错误: 命令执行失败: ${e.message}"
+            "错误: 命令执行失败: ${e.message ?: e::class.simpleName ?: "未知错误"}"
         }
     }
 
@@ -196,18 +202,21 @@ class ToolEventBus(
         if (!file.exists()) return "错误: 文件不存在: $path"
         if (!file.isFile) return "错误: 不是文件: $path"
 
-        val bytes = file.readBytes()
-        val actualSize = minOf(bytes.size, maxBytes)
+        val fileSize = file.length().toInt()
+        val actualSize = minOf(fileSize, maxBytes)
 
-        // 简单检测二进制文件
-        val isBinary = bytes.take(minOf(1024, bytes.size)).any { it == 0.toByte() }
+        // 流式读取前 maxBytes+1024 字节，避免大文件 OOM
+        val readSize = minOf(fileSize, maxBytes + 1024)
+        val bytes = ByteArray(readSize)
+        file.inputStream().use { it.read(bytes) }
+        val isBinary = bytes.take(minOf(1024, readSize)).any { it == 0.toByte() }
         return if (isBinary) {
             val hex = bytes.take(actualSize).joinToString("") { "%02x".format(it) }
-            "二进制文件 ($path), 大小=${bytes.size} bytes, 显示前 $actualSize bytes:\n$hex"
+            "二进制文件 ($path), 大小=$fileSize bytes, 显示前 $actualSize bytes:\n$hex"
         } else {
             val text = String(bytes, 0, actualSize, Charsets.UTF_8)
-            if (bytes.size > maxBytes) {
-                "$text\n...(文件被截断，总大小 ${bytes.size} bytes)"
+            if (fileSize > maxBytes) {
+                "$text\n...(文件被截断，总大小 $fileSize bytes)"
             } else {
                 text
             }
@@ -227,7 +236,8 @@ class ToolEventBus(
     }
 
     private fun executeListDir(args: JsonObject): String {
-        val path = args["path"]?.jsonPrimitive?.contentOrNull ?: "/root/pi_workspace"
+        val path = args["path"]?.jsonPrimitive?.contentOrNull
+            ?: return "错误: 缺少 path 参数"
         val file = resolveWorkspaceFile(path)
         if (!file.exists()) return "错误: 目录不存在: $path"
         if (!file.isDirectory) return "错误: 不是目录: $path"
@@ -243,13 +253,21 @@ class ToolEventBus(
         }
     }
 
-    /** 将工作区内相对路径解析为实际文件系统路径 */
+    /** 将工作区内相对路径解析为实际文件系统路径，防止路径遍历攻击 */
     private fun resolveWorkspaceFile(path: String): File {
-        return if (path.startsWith("/")) {
+        val workspace = File(paths.rootfsDir, workspaceProotRel)
+        val resolved = if (path.startsWith("/")) {
             File(paths.rootfsDir, path.removePrefix("/"))
         } else {
-            val workspace = File(paths.rootfsDir, "root/pi_workspace")
             File(workspace, path)
         }
+        // 路径遍历保护：规范化后必须在工作区内
+        val canonicalWorkspace = workspace.canonicalFile
+        val canonicalResolved = resolved.canonicalFile
+        if (!canonicalResolved.path.startsWith(canonicalWorkspace.path + File.separator) &&
+            canonicalResolved.path != canonicalWorkspace.path) {
+            throw SecurityException("路径越界：$path")
+        }
+        return canonicalResolved
     }
 }

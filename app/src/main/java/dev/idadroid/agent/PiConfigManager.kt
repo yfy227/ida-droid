@@ -31,15 +31,31 @@ class PiConfigManager(
 
     private val lenientJson = Json { ignoreUnknownKeys = true; explicitNulls = false; prettyPrint = true }
 
+    @Volatile private var cachedSnapshot: PiConfigSnapshot? = null
+    @Volatile private var cachedSnapshotTime: Long = 0
+
     fun readUserConfig(): PiUserConfig = runCatching {
         if (!configFile.isFile) return PiUserConfig()
         lenientJson.decodeFromString<PiUserConfig>(configFile.readText())
     }.getOrDefault(PiUserConfig())
 
     fun readSnapshot(): PiConfigSnapshot {
+        // 缓存：如果配置文件未修改，直接返回缓存
+        val configLastModified = maxOf(
+            configFile.lastModified(),
+            modelsFile.lastModified(),
+            settingsFile.lastModified(),
+            appendSystemFile.lastModified()
+        )
+        cachedSnapshot?.let { cache ->
+            if (cache.materializedDir.isNotBlank() && cachedSnapshotTime == configLastModified) {
+                return cache
+            }
+        }
+
         val cfg = readUserConfig()
         val modelsText = modelsFile.readTextOrDefault("{}\n")
-        return PiConfigSnapshot(
+        val snapshot = PiConfigSnapshot(
             defaultProvider = cfg.defaultProvider.orEmpty(),
             defaultModel = cfg.defaultModel.orEmpty(),
             defaultThinkingLevel = cfg.defaultThinkingLevel ?: "medium",
@@ -52,6 +68,9 @@ class PiConfigManager(
             materializedDir = "${workspaceProotPath()}/.idadroid/pi-agent",
             modelCatalog = parseAgentModelCatalog(modelsText)
         )
+        cachedSnapshot = snapshot
+        cachedSnapshotTime = configLastModified
+        return snapshot
     }
 
     fun saveSnapshot(snapshot: PiConfigSnapshot) {
@@ -72,6 +91,8 @@ class PiConfigManager(
         settingsFile.writeText(snapshot.settingsText.ifBlank { "{}" }.trimEnd() + "\n")
         modelsFile.writeText(snapshot.modelsText.ifBlank { "{}" }.trimEnd() + "\n")
         appendSystemFile.writeText(snapshot.appendSystem.trimEnd() + "\n")
+        // 使缓存失效
+        cachedSnapshot = null
     }
 
     fun defaultProvider(): String? = readUserConfig().defaultProvider?.takeIf { it.isNotBlank() }
