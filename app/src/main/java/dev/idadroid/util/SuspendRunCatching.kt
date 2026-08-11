@@ -13,7 +13,7 @@ import kotlinx.coroutines.CancellationException
  * concurrency: a cancelled parent coroutine's child keeps running instead of
  * being cancelled, wasting resources and potentially updating stale state.
  */
-suspend fun <T> runCatchingSuspending(block: suspend () -> T): Result<T> {
+suspend inline fun <T> runCatchingSuspending(block: suspend () -> T): Result<T> {
     return try {
         Result.success(block())
     } catch (e: CancellationException) {

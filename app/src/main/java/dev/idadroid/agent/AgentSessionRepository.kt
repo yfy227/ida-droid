@@ -20,26 +20,34 @@ class AgentSessionRepository(
     // Protects all read/write access to storeFile so that concurrent coroutines don't race.
     private val lock = Any()
 
-    fun loadStore(): AgentSessionStore = synchronized(lock) {
+    fun loadStore(): AgentSessionStore = synchronized(lock) { loadStoreInternal() }
+
+    private fun loadStoreInternal(): AgentSessionStore = synchronized(lock) {
         runCatching {
             if (!storeFile.isFile) return@synchronized AgentSessionStore()
             JsonFormats.pretty.decodeFromString<AgentSessionStore>(storeFile.readText())
         }.getOrDefault(AgentSessionStore())
     }
 
-    fun saveStore(store: AgentSessionStore) = synchronized(lock) {
+    fun saveStore(store: AgentSessionStore) = synchronized(lock) { saveStoreInternal(store) }
+
+    private fun saveStoreInternal(store: AgentSessionStore) = synchronized(lock) {
         storeFile.parentFile?.mkdirs()
         val tmp = java.io.File(storeFile.parentFile, "${storeFile.name}.tmp")
         tmp.writeText(JsonFormats.pretty.encodeToString(store))
-        tmp.renameTo(storeFile)
+        if (!tmp.renameTo(storeFile)) {
+            // renameTo 在某些文件系统上可能失败（如目标被占用），回退到 copy+delete
+            storeFile.writeText(tmp.readText())
+            tmp.delete()
+        }
     }
 
     fun listSessions(): List<AgentSessionRecord> = loadStore().sessions
 
     fun activeSessionId(): String? = loadStore().activeSessionId
 
-    fun ensureDefaultSession(provider: String? = null, model: String? = null, thinkingLevel: String? = null): AgentSessionRecord {
-        val store = loadStore()
+    fun ensureDefaultSession(provider: String? = null, model: String? = null, thinkingLevel: String? = null): AgentSessionRecord = synchronized(lock) {
+        val store = loadStoreInternal()
         val existing = store.sessions.firstOrNull { it.id == store.activeSessionId } ?: store.sessions.firstOrNull()
         if (existing != null) {
             val patched = existing.copy(
@@ -48,9 +56,9 @@ class AgentSessionRepository(
                 thinkingLevel = existing.thinkingLevel ?: thinkingLevel?.trim()?.takeIf { it.isNotBlank() }
             )
             val nextSessions = if (patched == existing) store.sessions else store.sessions.map { if (it.id == existing.id) patched else it }
-            if (store.activeSessionId == existing.id && patched == existing) return existing
-            saveStore(store.copy(sessions = nextSessions, activeSessionId = existing.id))
-            return patched
+            if (store.activeSessionId == existing.id && patched == existing) return@synchronized existing
+            saveStoreInternal(store.copy(sessions = nextSessions, activeSessionId = existing.id))
+            return@synchronized patched
         }
         val now = Instant.now().toString()
         val session = AgentSessionRecord(
@@ -64,12 +72,12 @@ class AgentSessionRepository(
             createdAt = now,
             updatedAt = now
         )
-        saveStore(AgentSessionStore(listOf(session), session.id))
-        return session
+        saveStoreInternal(AgentSessionStore(listOf(session), session.id))
+        session
     }
 
-    fun createSession(name: String? = null, provider: String? = null, model: String? = null, thinkingLevel: String? = null): AgentSessionRecord {
-        val store = loadStore()
+    fun createSession(name: String? = null, provider: String? = null, model: String? = null, thinkingLevel: String? = null): AgentSessionRecord = synchronized(lock) {
+        val store = loadStoreInternal()
         val now = Instant.now().toString()
         val session = AgentSessionRecord(
             id = "session-${UUID.randomUUID()}",
@@ -82,19 +90,19 @@ class AgentSessionRepository(
             createdAt = now,
             updatedAt = now
         )
-        saveStore(store.copy(sessions = store.sessions + session, activeSessionId = session.id))
-        return session
+        saveStoreInternal(store.copy(sessions = store.sessions + session, activeSessionId = session.id))
+        session
     }
 
-    fun setActive(id: String): AgentSessionRecord {
-        val store = loadStore()
+    fun setActive(id: String): AgentSessionRecord = synchronized(lock) {
+        val store = loadStoreInternal()
         val session = store.sessions.firstOrNull { it.id == id } ?: error("session 不存在：$id")
-        saveStore(store.copy(activeSessionId = id))
-        return session
+        saveStoreInternal(store.copy(activeSessionId = id))
+        session
     }
 
-    fun patchSession(id: String, patch: (AgentSessionRecord) -> AgentSessionRecord): AgentSessionRecord {
-        val store = loadStore()
+    fun patchSession(id: String, patch: (AgentSessionRecord) -> AgentSessionRecord): AgentSessionRecord = synchronized(lock) {
+        val store = loadStoreInternal()
         var updated: AgentSessionRecord? = null
         val sessions = store.sessions.map { current ->
             if (current.id == id) {
@@ -102,19 +110,19 @@ class AgentSessionRepository(
             } else current
         }
         val result = updated ?: error("session 不存在：$id")
-        saveStore(store.copy(sessions = sessions, activeSessionId = store.activeSessionId ?: id))
-        return result
+        saveStoreInternal(store.copy(sessions = sessions, activeSessionId = store.activeSessionId ?: id))
+        result
     }
 
-    fun deleteSession(id: String) {
-        val store = loadStore()
+    fun deleteSession(id: String) = synchronized(lock) {
+        val store = loadStoreInternal()
         val nextSessions = store.sessions.filterNot { it.id == id }
         val nextActive = when {
             store.activeSessionId != id -> store.activeSessionId
             nextSessions.isNotEmpty() -> nextSessions.first().id
             else -> null
         }
-        saveStore(store.copy(sessions = nextSessions, activeSessionId = nextActive))
+        saveStoreInternal(store.copy(sessions = nextSessions, activeSessionId = nextActive))
     }
 
     fun updateRuntimeStatus(id: String, status: String, error: String? = null): AgentSessionRecord? = runCatching {

@@ -68,6 +68,7 @@ class ContainerFileManager(
     }
 
     suspend fun deleteFile(path: String) = withContext(Dispatchers.IO) {
+        requireReady()
         val file = guestFile(path)
         require(file != paths.rootfsDir.canonicalFile) { "不能删除 rootfs 根目录" }
         if (file.isDirectory) file.deleteRecursively() else file.delete()

@@ -381,9 +381,11 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
         error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surfaceContainerLowest, shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+            // 把排序结果记住，避免每次重组都对整个目录列表重新排序（大目录会明显卡顿）
+            val sortedEntries = remember(entries) { entries.sortedWith(compareBy<ContainerFileEntry> { it.type != "directory" }.thenBy { it.name.lowercase() }) }
             androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxSize()) {
                 item { HomeFileHeaderRow() }
-                items(entries.sortedWith(compareBy<ContainerFileEntry> { it.type != "directory" }.thenBy { it.name.lowercase() }), key = { it.path }) { entry ->
+                items(sortedEntries, key = { it.path }) { entry ->
                     HomeFileRow(
                         entry = entry,
                         onOpen = {
@@ -444,7 +446,7 @@ fun HomeFileBrowserPanel(fileManager: ContainerFileManager) {
     deleteEntry?.let { entry ->
         AlertDialog(
             onDismissRequest = { deleteEntry = null },
-            confirmButton = { Button(onClick = { scope.launch { fileManager.deleteFile(entry.path); deleteEntry = null; reload() } }) { Text("确定") } },
+            confirmButton = { Button(onClick = { scope.launch { dev.idadroid.util.runCatchingSuspending { fileManager.deleteFile(entry.path) }.onSuccess { deleteEntry = null; reload() }.onFailure { error = "删除失败：${it.message}" } } }) { Text("确定") } },
             dismissButton = { TextButton(onClick = { deleteEntry = null }) { Text("取消") } },
             title = { Text("删除 ${entry.name}") },
             text = { Text("确定删除 ${entry.path}？") }

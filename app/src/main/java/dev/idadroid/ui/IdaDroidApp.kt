@@ -58,7 +58,9 @@ import dev.idadroid.terminal.ProotTerminalActivity
 import dev.idadroid.terminal.TerminalLogStore
 import dev.idadroid.vnc.GuiStatus
 import dev.idadroid.vnc.VncSessionManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private enum class IdaDroidScreen { Home, Settings, Agent, About }
 
@@ -337,18 +339,34 @@ fun IdaDroidApp() {
                     },
                     onDelete = {
                         scope.launch {
-                            mcpManager.stop()
-                            vncManager.stopGui()
-                            manager.deleteEnvironment()
+                            // 即使 MCP/VNC 停止失败也继续删除环境，避免残留状态；
+                            // 但把异常汇总展示给用户，避免静默失败造成误解。
+                            // 注意：必须使用 runCatchingSuspending，普通 runCatching 会
+                            // 吞掉 CancellationException 破坏协程取消语义。
+                            val errors = buildList {
+                                dev.idadroid.util.runCatchingSuspending { mcpManager.stop() }
+                                    .exceptionOrNull()?.let { add("MCP: ${it.message}") }
+                                dev.idadroid.util.runCatchingSuspending { vncManager.stopGui() }
+                                    .exceptionOrNull()?.let { add("VNC: ${it.message}") }
+                                dev.idadroid.util.runCatchingSuspending { manager.deleteEnvironment() }
+                                    .exceptionOrNull()?.let { add("Env: ${it.message}") }
+                            }
                             importProgress = null
-                            transientMessage = "已删除 active 环境"
+                            transientMessage = if (errors.isEmpty()) "已删除 active 环境" else "已删除 active 环境（部分组件异常：${errors.joinToString("；")}）"
                         }
                     }
                 )
             }
 
             if (showTerminalDiagnostics) {
-                val terminalLog = remember(showTerminalDiagnostics) { TerminalLogStore(context.applicationContext).readTail() }
+                // 异步加载终端日志，避免在主线程上同步读取文件导致 ANR
+                var terminalLog by remember { mutableStateOf<String?>(null) }
+                LaunchedEffect(showTerminalDiagnostics) {
+                    if (!showTerminalDiagnostics) return@LaunchedEffect
+                    terminalLog = withContext(Dispatchers.IO) {
+                        TerminalLogStore(context.applicationContext).readTail()
+                    }
+                }
                 AlertDialog(
                     onDismissRequest = { showTerminalDiagnostics = false },
                     confirmButton = {
@@ -362,7 +380,7 @@ fun IdaDroidApp() {
                                 .verticalScroll(rememberScrollState())
                         ) {
                             Text(
-                                terminalLog.ifBlank { "暂无日志。打开终端后，启动命令、pid、exit code 和 TerminalView 错误会写入这里。" },
+                                (terminalLog ?: "加载中…").ifBlank { "暂无日志。打开终端后，启动命令、pid、exit code 和 TerminalView 错误会写入这里。" },
                                 fontFamily = FontFamily.Monospace,
                                 style = MaterialTheme.typography.bodySmall
                             )
@@ -372,7 +390,12 @@ fun IdaDroidApp() {
             }
 
             if (showVncLog) {
-                val vncLog = remember(showVncLog, guiState) { vncManager.readLogTail() }
+                // 异步加载 VNC 日志，避免在主线程上同步读取文件导致 ANR
+                var vncLog by remember { mutableStateOf<String?>(null) }
+                LaunchedEffect(showVncLog, guiState) {
+                    if (!showVncLog) return@LaunchedEffect
+                    vncLog = withContext(Dispatchers.IO) { vncManager.readLogTail() }
+                }
                 AlertDialog(
                     onDismissRequest = { showVncLog = false },
                     confirmButton = {
@@ -386,7 +409,7 @@ fun IdaDroidApp() {
                                 .verticalScroll(rememberScrollState())
                         ) {
                             Text(
-                                vncLog.ifBlank { "暂无 VNC 日志。启动 GUI 后会写入 /root/pi_workspace/.idadroid/logs/ida-vnc.log。" },
+                                (vncLog ?: "加载中…").ifBlank { "暂无 VNC 日志。启动 GUI 后会写入 /root/pi_workspace/.idadroid/logs/ida-vnc.log。" },
                                 fontFamily = FontFamily.Monospace,
                                 style = MaterialTheme.typography.bodySmall
                             )
@@ -396,7 +419,12 @@ fun IdaDroidApp() {
             }
 
             if (showMcpLog) {
-                val mcpLog = remember(showMcpLog, mcpState) { mcpManager.readLogTail() }
+                // 异步加载 MCP 日志，避免在主线程上同步读取文件导致 ANR
+                var mcpLog by remember { mutableStateOf<String?>(null) }
+                LaunchedEffect(showMcpLog, mcpState) {
+                    if (!showMcpLog) return@LaunchedEffect
+                    mcpLog = withContext(Dispatchers.IO) { mcpManager.readLogTail() }
+                }
                 AlertDialog(
                     onDismissRequest = { showMcpLog = false },
                     confirmButton = {
@@ -410,7 +438,7 @@ fun IdaDroidApp() {
                                 .verticalScroll(rememberScrollState())
                         ) {
                             Text(
-                                mcpLog.ifBlank { "暂无 MCP 日志。启动 IDA MCP 后会写入 ida-mcp-http.log。" },
+                                (mcpLog ?: "加载中…").ifBlank { "暂无 MCP 日志。启动 IDA MCP 后会写入 ida-mcp-http.log。" },
                                 fontFamily = FontFamily.Monospace,
                                 style = MaterialTheme.typography.bodySmall
                             )

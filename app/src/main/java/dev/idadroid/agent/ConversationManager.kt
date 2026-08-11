@@ -10,8 +10,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -76,12 +74,18 @@ class ConversationManager(
         var toolRound: Int = 0,
         var activeJob: Job? = null,
         @Volatile var aborted: Boolean = false
-    )
+    ) {
+        /** 线程安全的消息追加 */
+        @Synchronized
+        fun appendMessage(msg: ChatHttpClient.ChatMessageDto) { messages.add(msg) }
+        /** 线程安全的消息快照 */
+        @Synchronized
+        fun snapshotMessages(): List<ChatHttpClient.ChatMessageDto> = messages.toList()
+    }
 
     private val mutex = Mutex()
     private var current: Conversation? = null
     private val toolBus = ToolEventBus(context, proot, paths)
-    val events = MutableSharedFlow<ConvEvent>(extraBufferCapacity = 256)
 
     /** 累计 token 使用量 */
     @Volatile private var totalPromptTokens: Int = 0
@@ -90,7 +94,7 @@ class ConversationManager(
 
     /** 当前对话的消息历史（持久化用） */
     suspend fun getMessages(): List<ChatHttpClient.ChatMessageDto> = mutex.withLock {
-        current?.messages?.toList() ?: emptyList()
+        current?.snapshotMessages() ?: emptyList()
     }
 
     /** 获取累计 token 使用量 */
@@ -107,7 +111,7 @@ class ConversationManager(
      * 发送用户消息，启动对话流。
      *
      * 核心循环：
-     *   HTTPS chat → 收到 tool_calls → 执行工具 → 追加 tool 结果 → 再次 HTTPS chat → ...
+     *   HTTPS chat → 收到  → 执行工具 → 追加 tool 结果 → 再次 HTTPS chat → ...
      *   直到收到 finish_reason=stop 或超过 maxToolRounds
      */
     suspend fun send(
@@ -129,7 +133,7 @@ class ConversationManager(
         }
 
         // 追加用户消息
-        conv.messages.add(ChatHttpClient.ChatMessageDto(
+        conv.appendMessage(ChatHttpClient.ChatMessageDto(
             role = "user",
             content = userText,
             images = images
@@ -144,90 +148,35 @@ class ConversationManager(
         onEvent(ConvEvent.PhaseChange("connecting"))
 
         while (conv.toolRound < config.maxToolRounds && !conv.aborted) {
-            // 调用 LLM
-            var textBuffer = StringBuilder()
-            var thinkingBuffer = StringBuilder()
-            var finishToolCalls: List<ChatHttpClient.ToolCallDto> = emptyList()
-            var finishReason: String? = null
-            var errorMessage: String? = null
+            // 调用 LLM 并收集流式事件
+            val llmResult = collectLlmStream(client, conv, tools, config, onEvent)
 
-            try {
-                client.chat(
-                    messages = conv.messages.toList(),
-                    tools = tools,
-                    systemPrompt = config.systemPrompt,
-                    thinkingLevel = config.thinkingLevel,
-                    temperature = config.temperature,
-                    maxTokens = config.maxTokens,
-                    topP = config.topP
-                ).collect { event ->
-                    when (event) {
-                        is ChatHttpClient.StreamEvent.TextDelta -> {
-                            if (textBuffer.isEmpty()) onEvent(ConvEvent.PhaseChange("receiving"))
-                            textBuffer.append(event.text)
-                            onEvent(ConvEvent.TextDelta(event.text))
-                        }
-                        is ChatHttpClient.StreamEvent.ThinkingDelta -> {
-                            thinkingBuffer.append(event.text)
-                            onEvent(ConvEvent.ThinkingDelta(event.text))
-                        }
-                        is ChatHttpClient.StreamEvent.ToolCallDelta -> {
-                            // 工具调用增量不实时推送，等 Finish 时统一处理
-                        }
-                        is ChatHttpClient.StreamEvent.Finish -> {
-                            finishReason = event.reason
-                            finishToolCalls = event.toolCalls
-                            // 更新 token 统计
-                            if (event.usage.totalTokens > 0) {
-                                totalPromptTokens += event.usage.promptTokens
-                                totalCompletionTokens += event.usage.completionTokens
-                                totalTokens += event.usage.totalTokens
-                                onEvent(ConvEvent.TokenUsageUpdate(
-                                    totalPromptTokens, totalCompletionTokens, totalTokens
-                                ))
-                            }
-                        }
-                        is ChatHttpClient.StreamEvent.Error -> {
-                            errorMessage = event.message
-                        }
-                        is ChatHttpClient.StreamEvent.Retrying -> {
-                            onEvent(ConvEvent.Retrying(event.attempt, event.reason, event.delayMs))
-                        }
-                    }
-                }
-            } catch (e: CancellationException) {
-                onEvent(ConvEvent.PhaseChange(null))
-                onEvent(ConvEvent.Error("对话已中止"))
-                onEvent(ConvEvent.TurnEnd)
-                throw e
-            }
-
-            if (errorMessage != null) {
-                // 先保存已收到的部分文本（如果有）
-                if (textBuffer.isNotEmpty()) {
+            // 处理错误
+            if (llmResult.error != null) {
+                if (llmResult.textBuffer.isNotEmpty()) {
                     conv.messages.add(ChatHttpClient.ChatMessageDto(
                         role = "assistant",
-                        content = textBuffer.toString(),
-                        toolCalls = finishToolCalls
+                        content = llmResult.textBuffer,
+                        toolCalls = llmResult.finishToolCalls
                     ))
                 }
-                onEvent(ConvEvent.Error(errorMessage!!))
+                onEvent(ConvEvent.Error(llmResult.error))
                 onEvent(ConvEvent.PhaseChange(null))
                 onEvent(ConvEvent.TurnEnd)
                 return
             }
 
             // 追加 assistant 消息到历史
-            conv.messages.add(ChatHttpClient.ChatMessageDto(
+            conv.appendMessage(ChatHttpClient.ChatMessageDto(
                 role = "assistant",
-                content = textBuffer.toString().ifBlank { null },
-                toolCalls = finishToolCalls
+                content = llmResult.textBuffer.ifBlank { null },
+                toolCalls = llmResult.finishToolCalls
             ))
 
             // 如果没有工具调用，对话结束
             // 注意: 部分API返回 finishReason="stop" 同时携带 tool_calls，
             // 此时应该执行工具，而不是结束对话。
-            if (finishToolCalls.isEmpty()) {
+            if (llmResult.finishToolCalls.isEmpty()) {
                 onEvent(ConvEvent.PhaseChange(null))
                 onEvent(ConvEvent.TurnEnd)
                 return
@@ -235,11 +184,11 @@ class ConversationManager(
 
             // 执行工具调用 — 并行执行无依赖的工具
             onEvent(ConvEvent.PhaseChange("executing_tool"))
-            val toolResults = executeToolCallsParallel(finishToolCalls, conv, config, onEvent)
+            val toolResults = executeToolCallsParallel(llmResult.finishToolCalls, conv, config, onEvent)
 
             // 追加所有 tool 结果消息
             toolResults.forEach { (toolCall, result) ->
-                conv.messages.add(ChatHttpClient.ChatMessageDto(
+                conv.appendMessage(ChatHttpClient.ChatMessageDto(
                     role = "tool",
                     content = result.output,
                     toolCallId = toolCall.id,
@@ -261,6 +210,88 @@ class ConversationManager(
 
         onEvent(ConvEvent.PhaseChange(null))
         onEvent(ConvEvent.TurnEnd)
+    }
+
+    /** 单轮 LLM 流式调用的收集结果 */
+    private data class LlmRoundResult(
+        val textBuffer: String,
+        val thinkingBuffer: String,
+        val finishToolCalls: List<ChatHttpClient.ToolCallDto>,
+        val finishReason: String?,
+        val error: String?
+    )
+
+    /** 收集单轮 LLM SSE 流的所有事件 */
+    private suspend fun collectLlmStream(
+        client: ChatHttpClient,
+        conv: Conversation,
+        tools: List<ToolEventBus.ToolDefinition>,
+        config: ConvConfig,
+        onEvent: (ConvEvent) -> Unit
+    ): LlmRoundResult {
+        val textBuffer = StringBuilder()
+        val thinkingBuffer = StringBuilder()
+        var finishToolCalls: List<ChatHttpClient.ToolCallDto> = emptyList()
+        var finishReason: String? = null
+        var errorMessage: String? = null
+
+        try {
+            client.chat(
+                messages = conv.messages.toList(),
+                tools = tools,
+                systemPrompt = config.systemPrompt,
+                thinkingLevel = config.thinkingLevel,
+                temperature = config.temperature,
+                maxTokens = config.maxTokens,
+                topP = config.topP
+            ).collect { event ->
+                when (event) {
+                    is ChatHttpClient.StreamEvent.TextDelta -> {
+                        if (textBuffer.isEmpty()) onEvent(ConvEvent.PhaseChange("receiving"))
+                        textBuffer.append(event.text)
+                        onEvent(ConvEvent.TextDelta(event.text))
+                    }
+                    is ChatHttpClient.StreamEvent.ThinkingDelta -> {
+                        thinkingBuffer.append(event.text)
+                        onEvent(ConvEvent.ThinkingDelta(event.text))
+                    }
+                    is ChatHttpClient.StreamEvent.ToolCallDelta -> {
+                        // 工具调用增量不实时推送，等 Finish 时统一处理
+                    }
+                    is ChatHttpClient.StreamEvent.Finish -> {
+                        finishReason = event.reason
+                        finishToolCalls = event.toolCalls
+                        if (event.usage.totalTokens > 0) {
+                            totalPromptTokens += event.usage.promptTokens
+                            totalCompletionTokens += event.usage.completionTokens
+                            totalTokens += event.usage.totalTokens
+                            onEvent(ConvEvent.TokenUsageUpdate(
+                                totalPromptTokens, totalCompletionTokens, totalTokens
+                            ))
+                        }
+                    }
+                    is ChatHttpClient.StreamEvent.Error -> {
+                        errorMessage = event.message
+                    }
+                    is ChatHttpClient.StreamEvent.Retrying -> {
+                        onEvent(ConvEvent.Retrying(event.attempt, event.reason, event.delayMs))
+                    }
+                }
+            }
+        } catch (e: CancellationException) {
+            onEvent(ConvEvent.PhaseChange(null))
+            onEvent(ConvEvent.Error("对话已中止"))
+            onEvent(ConvEvent.TurnEnd)
+            throw e
+        }
+
+        return LlmRoundResult(
+            textBuffer = textBuffer.toString(),
+            thinkingBuffer = thinkingBuffer.toString(),
+            finishToolCalls = finishToolCalls,
+            finishReason = finishReason,
+            error = errorMessage
+        )
     }
 
     /**
@@ -327,31 +358,38 @@ class ConversationManager(
      */
     private fun trimContextIfNeeded(conv: Conversation) {
         val config = conv.config
-        val estimatedTokens = estimateTokens(conv.messages)
-        if (estimatedTokens <= config.contextTokenLimit) return
+        // 使用与 @Synchronized 方法相同的锁，确保 trim 期间不会被 appendMessage/snapshotMessages 打断
+        synchronized(conv) {
+            val msgs = conv.messages
+            val estimatedTokens = estimateTokens(msgs)
+            if (estimatedTokens <= config.contextTokenLimit) return
 
-        val msgs = conv.messages
-        if (msgs.size <= 4) return
+            if (msgs.size <= 4) return
 
-        // 目标保留条数（最近的一半）
-        val keepRecent = msgs.size / 2
-        // 候选截断点：从第 1 条之后开始（跳过第 0 条，通常是 system 或首条 user）
-        var cutEnd = msgs.size - keepRecent
-        if (cutEnd <= 1) return
+            // 目标保留条数（最近的一半）
+            val keepRecent = msgs.size / 2
+            // 候选截断点：从第 1 条之后开始（跳过第 0 条，通常是 system 或首条 user）
+            var cutEnd = msgs.size - keepRecent
+            if (cutEnd <= 1) return
 
-        // 向前调整截断点：不能在 assistant(tool_calls) 和 tool 之间断开
-        // 如果 cutEnd 处的消息是 tool 角色，向前回退到 tool_calls 的 assistant 消息之前
-        while (cutEnd > 1 && msgs[cutEnd].role == "tool") {
-            cutEnd--
-        }
-        // 如果 cutEnd 处的消息是 assistant 且带 tool_calls，也回退一条
-        if (cutEnd > 1 && msgs[cutEnd].role == "assistant" && msgs[cutEnd].toolCalls.isNotEmpty()) {
-            cutEnd--
-        }
+            // 修复 D: 向前调整截断点，循环回退直到 cutEnd 位置既不是 tool 也不是 assistant(tool_calls)
+            // 原代码用 while 检查 tool + if 检查 assistant(tool_calls) 分两步，
+            // 但 if 回退后可能落在 tool 上（while 不会重新执行），导致截断后第一条是
+            // 没有前驱 assistant(tool_calls) 的 tool 消息，API 报错。
+            // 合并为单一 while 循环：每次回退后重新检查当前 cutEnd 位置
+            while (cutEnd > 1) {
+                val msg = msgs[cutEnd]
+                if (msg.role == "tool" || (msg.role == "assistant" && msg.toolCalls.isNotEmpty())) {
+                    cutEnd--
+                } else {
+                    break
+                }
+            }
 
-        if (cutEnd > 1) {
-            // subList(1, cutEnd) 即可安全移除
-            msgs.subList(1, cutEnd).clear()
+            if (cutEnd > 1) {
+                // subList(1, cutEnd) 即可安全移除
+                msgs.subList(1, cutEnd).clear()
+            }
         }
     }
 
@@ -381,6 +419,12 @@ class ConversationManager(
 
     /** 从已有消息历史恢复对话 */
     suspend fun restoreFromMessages(messages: List<ChatHttpClient.ChatMessageDto>, config: ConvConfig) = mutex.withLock {
+        // 使用普通 MutableList，与 Conversation 构造器一致，统一同步策略。
+        // 线程安全由 Conversation 的 @Synchronized 方法（appendMessage/snapshotMessages）
+        // 和 trimContextIfNeeded 的 synchronized(conv) 统一保证，都锁在 Conversation 实例上。
+        // Collections.synchronizedList 有自己的内部锁，与 @Synchronized(conv) 不一致：
+        // trimContextIfNeeded 直接对 conv.messages 做 subList().clear()（compound 操作），
+        // 此时 synchronizedList 的锁不起作用，只有 synchronized(conv) 能保证原子性。
         current = Conversation(config, messages.toMutableList())
     }
 }

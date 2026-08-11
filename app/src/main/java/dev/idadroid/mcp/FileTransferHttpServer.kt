@@ -42,10 +42,10 @@ class FileTransferHttpServer(
     private val port: Int = DEFAULT_PORT,
     private val idaMcpEndpointProvider: () -> String? = { null }
 ) {
-    private var scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var serverSocket: ServerSocket? = null
+    @Volatile private var scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile private var serverSocket: ServerSocket? = null
     @Volatile private var running = false
-    private var acceptJob: Job? = null
+    @Volatile private var acceptJob: Job? = null
 
     val isRunning: Boolean get() = running
     val boundPort: Int get() = serverSocket?.localPort ?: -1
@@ -56,7 +56,7 @@ class FileTransferHttpServer(
         if (!scope.isActive) {
             scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         }
-        val socket = ServerSocket(port)
+        val socket = ServerSocket(port, 50, java.net.InetAddress.getByName("127.0.0.1"))
         serverSocket = socket
         running = true
         acceptJob = scope.launch {
@@ -165,7 +165,7 @@ class FileTransferHttpServer(
                     if (entry != null) {
                         respondJson(output, 200, entryJson(entry))
                     } else {
-                        respondJson(output, 404, "{\"error\":\"no transfer matching '$name'\"}")
+                        respondJson(output, 404, "{\"error\":\"no transfer matching '" + escapeJson(name) + "'\"}")
                     }
                 } else {
                     respondJson(output, 200, manager.manifestJson())
@@ -210,7 +210,7 @@ class FileTransferHttpServer(
                 if (entry != null) {
                     respondJson(output, 200, entryJson(entry))
                 } else {
-                    respondJson(output, 404, "{\"error\":\"file not found on host: $name\"}")
+                    respondJson(output, 404, "{\"error\":\"file not found on host: " + escapeJson(name) + "\"}")
                 }
             }
 
@@ -266,7 +266,7 @@ class FileTransferHttpServer(
                 respondJson(output, if (ok) 200 else 404, "{\"removed\":$ok}")
             }
 
-            else -> respondJson(output, 404, "{\"error\":\"not found: $method $path\"}")
+            else -> respondJson(output, 404, "{\"error\":\"not found: " + escapeJson(method) + " " + escapeJson(path) + "\"}")
         }
     }
 

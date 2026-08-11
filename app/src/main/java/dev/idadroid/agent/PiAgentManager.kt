@@ -21,11 +21,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.coroutineContext
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonPrimitive
 
 class PiAgentManager(
@@ -74,10 +72,19 @@ class PiAgentManager(
     // 回复"粘成一坨"地攒着一起蹦出来。这里把 delta 先累积到缓冲区，再按
     // 固定节拍（约 30fps）合并 flush，既保证逐字流式的视觉流畅，又把状态
     // 更新与重组次数压到可控范围。
+    //
+    // 线程安全说明：ConversationManager 的并行工具执行（executeToolCallsParallel）
+    // 会从多个 IO 线程同时调用 onEvent 回调，导致 handleConvEvent →
+    // finishStreamingFlush / applyAssistantDeltas 从 IO 线程进入。
+    // StringBuilder 不是线程安全的，deltaFlushJob / deltaStreaming 也不是 volatile，
+    // 若不加锁，IO 线程的 finishStreamingFlush 与 Main 线程的 deltaFlushJob
+    // 会竞争同一批缓冲区，导致丢字或 StringBuilder 内部状态损坏。
+    // 用 streamFlushLock 保护所有对这四个字段的访问。
+    private val streamFlushLock = Any()
     private val pendingTextDelta = StringBuilder()
     private val pendingThinkingDelta = StringBuilder()
-    private var deltaFlushJob: Job? = null
-    private var deltaStreaming = false
+    @Volatile private var deltaFlushJob: Job? = null
+    @Volatile private var deltaStreaming = false
     private val _state = MutableStateFlow(AgentUiState(activity = "agent 未启动"))
     val state: StateFlow<AgentUiState> = _state.asStateFlow()
 
@@ -518,56 +525,65 @@ class PiAgentManager(
         // 上下文压缩：保留 system 消息和最近 1/3 的对话历史，
         // 生成一条摘要消息替代被移除的内容。
         scope.launch {
-            val sessionId = _state.value.activeSessionId ?: return@launch
-            val messages = _state.value.messages
-            if (messages.size <= 6) {
-                appendMessage(ChatMessage(newMessageId(), "system", "消息较少，无需压缩。", System.currentTimeMillis()))
-                return@launch
-            }
-
-            val keepCount = maxOf(4, messages.size / 3)
-            val toSummarize = messages.dropLast(keepCount)
-            val kept = messages.takeLast(keepCount)
-
-            // 生成简单摘要
-            val summary = buildString {
-                append("[上下文压缩]\n")
-                append("已压缩 ${toSummarize.size} 条早期消息。\n")
-                if (!customInstructions.isNullOrBlank()) {
-                    append("用户指示：$customInstructions\n")
+            // 用 sendMutex 串行化，防止 compact 与 sendPrompt 并发执行：
+            // compact 会 reset() ConversationManager，若与正在进行的对话流并发，
+            // 会导致对话流断裂、消息丢失。
+            sendMutex.withLock {
+                val sessionId = _state.value.activeSessionId ?: return@withLock
+                val messages = _state.value.messages
+                if (messages.size <= 6) {
+                    appendMessage(ChatMessage(newMessageId(), "system", "消息较少，无需压缩。", System.currentTimeMillis()))
+                    return@withLock
                 }
-                append("\n压缩前的关键内容摘要：\n")
-                toSummarize.filter { it.role == "user" || it.role == "assistant" }
-                    .takeLast(5)
-                    .forEach { msg ->
-                        val role = if (msg.role == "user") "用户" else "助手"
-                        val preview = msg.text.take(200).replace("\n", " ")
-                        append("- $role: $preview...\n")
+
+                val keepCount = maxOf(4, messages.size / 3)
+                val toSummarize = messages.dropLast(keepCount)
+                val kept = messages.takeLast(keepCount)
+
+                // 生成简单摘要
+                val summary = buildString {
+                    append("[上下文压缩]\n")
+                    append("已压缩 ${toSummarize.size} 条早期消息。\n")
+                    if (!customInstructions.isNullOrBlank()) {
+                        append("用户指示：$customInstructions\n")
                     }
-            }
-
-            // 重置 ConversationManager 并用压缩后的历史恢复
-            conversationManager.reset()
-            val convConfig = _state.value.activeSessionId?.let { id ->
-                val session = repo.listSessions().firstOrNull { it.id == id }
-                session?.let { resolveConvConfig(id, it) }
-            }
-            if (convConfig != null) {
-                val restoredMessages = kept.map { msg ->
-                    ChatHttpClient.ChatMessageDto(
-                        role = msg.role,
-                        content = msg.text.ifBlank { null },
-                        toolCallId = msg.toolCallId,
-                        name = msg.toolName
-                    )
+                    append("\n压缩前的关键内容摘要：\n")
+                    toSummarize.filter { it.role == "user" || it.role == "assistant" }
+                        .takeLast(5)
+                        .forEach { msg ->
+                            val role = if (msg.role == "user") "用户" else "助手"
+                            val preview = msg.text.take(200).replace("\n", " ")
+                            append("- $role: $preview...\n")
+                        }
                 }
-                conversationManager.restoreFromMessages(restoredMessages, convConfig)
-            }
 
-            _state.update { it.copy(messages = listOf(
-                ChatMessage(newMessageId(), "system", summary, System.currentTimeMillis())
-            ) + kept) }
-            refresh()
+                // 在 reset() 之前取出完整的 API 级 ChatMessageDto 列表，
+                // 截取保留部分（对应 UI 的 kept 消息，即最后 keepCount 条）。
+                // 不从 UI 级 ChatMessage 转换，因为 UI→DTO 映射会丢失 toolCalls
+                // 字段，导致后续 tool 消息缺少前驱 assistant(tool_calls) 而 API 报错。
+                val apiMessages = conversationManager.getMessages()
+                val keptApiMessages = apiMessages.takeLast(minOf(keepCount, apiMessages.size))
+
+                // 重置 ConversationManager 并用压缩后的历史恢复
+                conversationManager.reset()
+                val convConfig = sessionId.let { id ->
+                    val session = repo.listSessions().firstOrNull { it.id == id }
+                    session?.let { resolveConvConfig(id, it) }
+                }
+                if (convConfig != null && keptApiMessages.isNotEmpty()) {
+                    conversationManager.restoreFromMessages(keptApiMessages, convConfig)
+                }
+
+                _state.update { it.copy(messages = listOf(
+                    ChatMessage(newMessageId(), "system", summary, System.currentTimeMillis())
+                ) + kept) }
+                // 不调用 refresh()：refresh() → loadMessages() → loadMessagesInternal()
+                // 会用 newMessageId() 给每条消息重新生成 UUID，导致 LazyColumn 的 key
+                // 全部失效、全列表重组 + 闪烁/滚动跳跃。compact 后 state 中的消息列表
+                // 已经是正确的（新 summary + 保留的 kept 消息，kept 保留原 ID），
+                // 只需刷新 session 列表即可。
+                _state.update { it.copy(sessions = repo.listSessions()) }
+            }
         }
     }
 
@@ -755,18 +771,22 @@ class PiAgentManager(
     private fun applyAssistantDeltas(textDelta: String, thinkingDelta: String) {
         if (textDelta.isEmpty() && thinkingDelta.isEmpty()) return
         // 累积到缓冲区，避免每个 delta 都触发一次整列表拷贝 + 全屏重组。
-        if (textDelta.isNotEmpty()) pendingTextDelta.append(textDelta)
-        if (thinkingDelta.isNotEmpty()) pendingThinkingDelta.append(thinkingDelta)
-        // 本轮第一个 delta：立即 flush 一次，让流式游标与首字瞬间出现，
-        // 随后启动节拍 flusher（约 30fps）持续合并后续 delta。
-        if (!deltaStreaming) {
-            deltaStreaming = true
-            flushPendingDeltas()
-            deltaFlushJob?.cancel()
-            deltaFlushJob = scope.launch(Dispatchers.Main.immediate) {
-                while (isActive) {
-                    delay(STREAM_FLUSH_INTERVAL_MS)
-                    flushPendingDeltas()
+        // 用 synchronized 保护：并行工具场景下 handleConvEvent 从 IO 线程调用，
+        // 与 Main 线程的 deltaFlushJob 可能同时操作缓冲区。
+        synchronized(streamFlushLock) {
+            if (textDelta.isNotEmpty()) pendingTextDelta.append(textDelta)
+            if (thinkingDelta.isNotEmpty()) pendingThinkingDelta.append(thinkingDelta)
+            // 本轮第一个 delta：立即 flush 一次，让流式游标与首字瞬间出现，
+            // 随后启动节拍 flusher（约 30fps）持续合并后续 delta。
+            if (!deltaStreaming) {
+                deltaStreaming = true
+                flushPendingDeltasLocked()
+                deltaFlushJob?.cancel()
+                deltaFlushJob = scope.launch(Dispatchers.Main.immediate) {
+                    while (isActive) {
+                        delay(STREAM_FLUSH_INTERVAL_MS)
+                        flushPendingDeltas()
+                    }
                 }
             }
         }
@@ -774,6 +794,13 @@ class PiAgentManager(
 
     /** 把缓冲区里累积的 delta 一次性合并进状态（一次 _state.update）。 */
     private fun flushPendingDeltas() {
+        synchronized(streamFlushLock) {
+            flushPendingDeltasLocked()
+        }
+    }
+
+    /** flushPendingDeltas 的内部实现，调用者必须已持有 streamFlushLock。 */
+    private fun flushPendingDeltasLocked() {
         if (pendingTextDelta.isEmpty() && pendingThinkingDelta.isEmpty()) return
         val textDelta = pendingTextDelta.toString()
         val thinkingDelta = pendingThinkingDelta.toString()
@@ -800,12 +827,23 @@ class PiAgentManager(
 
     /** 结束本轮流式：停止节拍 flusher，并把残余 delta 强制 flush 干净，确保不丢字。 */
     private fun finishStreamingFlush() {
-        deltaFlushJob?.cancel()
-        deltaFlushJob = null
-        flushPendingDeltas()
-        deltaStreaming = false
+        synchronized(streamFlushLock) {
+            deltaFlushJob?.cancel()
+            deltaFlushJob = null
+            flushPendingDeltasLocked()
+            deltaStreaming = false
+        }
     }
 
+    /**
+     * 插入或更新工具调用消息。
+     *
+     * 线程安全说明：并行工具执行时多个 IO 线程可能同时调用此方法。
+     * MutableStateFlow.update 内部使用 CAS 循环，失败时自动重试，
+     * 因此每次 update 都基于最新状态，不会丢失更新（无 ABA 问题）。
+     * lambda 内的 toMutableList + indexOfFirst 是无副作用的纯操作，
+     * 重试时重复执行不会产生问题。
+     */
     private fun upsertTool(toolCallId: String, name: String, args: JsonElement?, result: String?, resultMeta: ToolResultMeta?, status: String) {
         _state.update { old ->
             val list = old.messages.toMutableList()
@@ -945,7 +983,10 @@ class PiAgentManager(
                     resultMeta = null,
                     status = if (event.success) "done" else "error"
                 )
-                _state.update { it.copy(processingPhase = "connecting") }
+                // 不在此处设置 processingPhase = "connecting"：并行工具调用时，每个
+                // ToolCallResult 都会触发，但其他工具可能仍在执行，过早设 "connecting"
+                // 会让 UI 显示"正在连接"而实际还在等工具完成。等所有工具结果到达后，
+                // ConversationManager.send() 会发送 PhaseChange("connecting") 事件正确设置此状态。
             }
             is ConversationManager.ConvEvent.PhaseChange -> {
                 _state.update { it.copy(processingPhase = event.phase) }
@@ -966,7 +1007,8 @@ class PiAgentManager(
                 ))
             }
             ConversationManager.ConvEvent.TurnEnd -> {
-                finishStreamingFlush()
+                // setTurnActive(false) 内部已调用 finishStreamingFlush()，
+                // 这里不需要重复调用（修复前重复 flush 在 IO 线程与 Main 线程竞争）
                 setTurnActive(sessionId, false)
                 repo.updateRuntimeStatus(sessionId, "running", null)
                 _state.update { it.copy(processingPhase = null, promptSentAt = 0L, firstDeltaAt = 0L) }

@@ -388,7 +388,8 @@ class IdaDroidSettings(context: Context) {
         /** Generate a random 8-character alphanumeric password suitable for VNC auth. */
         fun generateRandomPassword(): String {
             val chars = ('A'..'Z') + ('a'..'z') + ('2'..'9')
-            return (1..8).map { chars.random() }.joinToString("")
+            val rng = java.security.SecureRandom()
+            return (1..8).map { chars[rng.nextInt(chars.size)] }.joinToString("")
         }
     }
 }
@@ -411,7 +412,12 @@ data class McpSettings(
     val sseKeepAliveSecs: Int = IdaDroidSettings.DEFAULT_MCP_SSE_KEEPALIVE,
     val autoRestart: Boolean = IdaDroidSettings.DEFAULT_MCP_AUTO_RESTART
 ) {
-    val bind: String get() = "${bindHost.ifBlank { "127.0.0.1" }}:${port.coerceIn(1, 65535)}"
+    val bind: String get() {
+        val host = bindHost.ifBlank { "127.0.0.1" }
+        // Bracket IPv6 addresses (e.g. ::1 → [::1]:port) to avoid ambiguity
+        val formattedHost = if (host.contains(':') && !host.startsWith("[")) "[$host]" else host
+        return "$formattedHost:${port.coerceIn(1, 65535)}"
+    }
     val endpoint: String get() = "http://$bind"
 }
 

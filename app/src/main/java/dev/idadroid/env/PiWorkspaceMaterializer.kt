@@ -6,7 +6,7 @@ import dev.idadroid.deepindex.DeepIndexScriptBuilder
 import java.io.File
 
 class PiWorkspaceMaterializer {
-    fun materialize(rootfsDir: File, workspacePath: String = "/root/pi_workspace") {
+    fun materialize(rootfsDir: File, workspacePath: String = DEFAULT_WORKSPACE) {
         val wsRel = workspacePath.removePrefix("/").ifBlank { "root/pi_workspace" }
         val workspace = File(rootfsDir, wsRel)
         val uploadDir = File(workspace, ".upload")
@@ -370,4 +370,8 @@ EOF
         esac
         """.trimIndent() + "\n"
     }
+    companion object {
+        const val DEFAULT_WORKSPACE = "/root/pi_workspace"
+    }
+
 }

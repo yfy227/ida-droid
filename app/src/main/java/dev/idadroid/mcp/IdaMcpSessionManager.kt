@@ -340,15 +340,21 @@ class IdaMcpSessionManager(
 
     private fun pumpProcessOutput(process: Process, file: File) {
         file.parentFile?.mkdirs()
-        file.appendText("\n== ${Instant.now()} IDA MCP supervisor started pid=${process.safePid() ?: "unknown"} ==\n")
+        val logLock = Any()
+        fun logLine(prefix: String, line: String) = synchronized(logLock) {
+            file.appendText("[$prefix] $line\n")
+        }
+        synchronized(logLock) {
+            file.appendText("\n== ${Instant.now()} IDA MCP supervisor started pid=${process.safePid() ?: "unknown"} ==\n")
+        }
         Thread {
             process.inputStream.bufferedReader().useLines { lines ->
-                lines.forEach { file.appendText("[stdout] $it\n") }
+                lines.forEach { logLine("stdout", it) }
             }
         }.apply { name = "idadroid-mcp-stdout"; isDaemon = true; start() }
         Thread {
             process.errorStream.bufferedReader().useLines { lines ->
-                lines.forEach { file.appendText("[stderr] $it\n") }
+                lines.forEach { logLine("stderr", it) }
             }
         }.apply { name = "idadroid-mcp-stderr"; isDaemon = true; start() }
     }
@@ -451,7 +457,11 @@ data class IdaMcpLaunchSettings(
     val sessionKeepAliveSecs: Int = 1800,
     val sseKeepAliveSecs: Int = 15
 ) {
-    val bind: String get() = "${bindHost.ifBlank { "127.0.0.1" }}:${port.coerceIn(1, 65535)}"
+    val bind: String get() {
+        val host = bindHost.ifBlank { "127.0.0.1" }
+        val formattedHost = if (host.contains(':') && !host.startsWith("[")) "[$host]" else host
+        return "$formattedHost:${port.coerceIn(1, 65535)}"
+    }
     val endpoint: String get() = "http://$bind"
 
     fun sanitized(): IdaMcpLaunchSettings = copy(

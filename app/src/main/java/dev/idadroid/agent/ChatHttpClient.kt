@@ -1,6 +1,5 @@
 package dev.idadroid.agent
 
-import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlinx.coroutines.Dispatchers
@@ -158,9 +157,13 @@ class ChatHttpClient(
                     setRequestProperty("Content-Type", "application/json")
                     setRequestProperty("Authorization", "Bearer $apiKey")
                     setRequestProperty("Accept", "text/event-stream")
-                    outputStream.write(json.encodeToString(JsonObject.serializer(), requestBody).toByteArray())
                 }
+                // 先赋值再写入，避免 write 抛异常时 connection 仍为 null 导致连接泄漏
                 connection = conn
+                conn.outputStream.use { os ->
+                    os.write(json.encodeToString(JsonObject.serializer(), requestBody).toByteArray())
+                    os.flush()
+                }
 
                 val responseCode = conn.responseCode
                 if (responseCode !in 200..299) {
@@ -393,7 +396,8 @@ class ChatHttpClient(
         val dataLines = rawData.lines().filter { it.startsWith("data:") }
         if (dataLines.isEmpty()) return null
 
-        val data = dataLines.joinToString("") { it.removePrefix("data:").trim() }
+        // SSE 规范：多个 data: 行应用 \n 拼接（不是空字符串），否则多行 JSON 会被错误合并。
+        val data = dataLines.joinToString("\n") { it.removePrefix("data:").trim() }
         if (data == "[DONE]") {
             val finalToolCalls = pendingToolCalls.toSortedMap().values.mapNotNull { m ->
                 val id = m["id"] ?: return@mapNotNull null

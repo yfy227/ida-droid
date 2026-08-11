@@ -397,7 +397,9 @@ class ProotTerminalActivity : ComponentActivity() {
         }, LinearLayout.LayoutParams(dp(64), dp(36)))
         toolbar.addView(toolbarButton("复制") {
             val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-            clipboard.setPrimaryClip(ClipData.newPlainText("IDAdroid terminal log", logStore.readTail()))
+            // 复用时复用前面已读取的 logText，避免在主线程上重复读取大文件造成卡顿；
+            // 用户复制的内容与界面显示保持一致，体验上更可预期。
+            clipboard.setPrimaryClip(ClipData.newPlainText("IDAdroid terminal log", logText))
             toast("日志已复制")
         }, LinearLayout.LayoutParams(dp(64), dp(36)).apply { leftMargin = dp(8) })
         toolbar.addView(toolbarButton("清空") {

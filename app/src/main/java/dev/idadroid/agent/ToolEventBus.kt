@@ -177,12 +177,13 @@ class ToolEventBus(
 
     /**
      * 在 proot 内执行 shell 命令。
-     * 使用轮询方式检查进程完成，避免长时间阻塞。
+     * 超时上限 600 秒，防止 AI 恶意设置超大值。
      */
     private suspend fun executeShell(args: JsonObject): String {
         val command = args["command"]?.jsonPrimitive?.contentOrNull
             ?: return "错误: 缺少 command 参数"
-        val timeoutSec = args["timeout"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 120
+        val timeoutSec = (args["timeout"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 120)
+            .coerceIn(1, MAX_SHELL_TIMEOUT_SEC)
 
         return try {
             proot.executeCommandWithTimeout(command, timeoutSec.toLong() * 1000)
@@ -202,20 +203,26 @@ class ToolEventBus(
         if (!file.exists()) return "错误: 文件不存在: $path"
         if (!file.isFile) return "错误: 不是文件: $path"
 
-        val fileSize = file.length().toInt()
-        val actualSize = minOf(fileSize, maxBytes)
+        // 修复: 使用 Long 安全比较，避免大文件 file.length().toInt() 溢出为负数
+        // 当文件 >2GB 时 toInt() 会溢出，导致 ByteArray(negative) 崩溃 (NegativeArraySizeException)
+        val fileSize = file.length()
+        val maxBytesLong = maxBytes.toLong().coerceAtLeast(0L)
+        // 安全上限: Int.MAX_VALUE - 8 (JVM 数组头开销)
+        val safeIntMax = (Int.MAX_VALUE - 8).toLong()
+        // 实际读取量: 不超过 maxBytes + 1024 (用于截断提示)，且不超过 Int 安全范围
+        val readLimit = minOf(fileSize, maxBytesLong + 1024L).coerceAtMost(safeIntMax).toInt()
+        // 展示量: 不超过 maxBytes，且不超过 readLimit
+        val actualSize = minOf(fileSize, maxBytesLong).coerceAtMost(safeIntMax).toInt().coerceAtMost(readLimit)
 
-        // 流式读取前 maxBytes+1024 字节，避免大文件 OOM
-        val readSize = minOf(fileSize, maxBytes + 1024)
-        val bytes = ByteArray(readSize)
+        val bytes = ByteArray(readLimit)
         file.inputStream().use { it.read(bytes) }
-        val isBinary = bytes.take(minOf(1024, readSize)).any { it == 0.toByte() }
+        val isBinary = bytes.take(minOf(1024, actualSize)).any { it == 0.toByte() }
         return if (isBinary) {
             val hex = bytes.take(actualSize).joinToString("") { "%02x".format(it) }
             "二进制文件 ($path), 大小=$fileSize bytes, 显示前 $actualSize bytes:\n$hex"
         } else {
             val text = String(bytes, 0, actualSize, Charsets.UTF_8)
-            if (fileSize > maxBytes) {
+            if (fileSize > maxBytesLong) {
                 "$text\n...(文件被截断，总大小 $fileSize bytes)"
             } else {
                 text
@@ -269,5 +276,10 @@ class ToolEventBus(
             throw SecurityException("路径越界：$path")
         }
         return canonicalResolved
+    }
+
+    companion object {
+        /** shell 命令最大超时（秒），防止 AI 恶意设置超大值 */
+        const val MAX_SHELL_TIMEOUT_SEC = 600
     }
 }

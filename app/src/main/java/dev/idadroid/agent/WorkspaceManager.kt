@@ -286,8 +286,12 @@ class WorkspaceManager(
         val rootUri = currentWorkspaceUri ?: return null
         val parts = relativePath.split('/').filter { it.isNotBlank() }
         if (parts.isEmpty()) return null
+        // 不能用 naive "$treeDocId/${parts.joinToString("/")}" — docId 分隔符是 provider 定义的，
+        // 必须逐级 walk children 才能安全解析子文档 ID。
+        // 修复：原图灵写成了 resolveDocId(parts)，但项目里没有 List<String> 重载，
+        // 只有 resolveDocId(rootUri, rootDocId, relativePath) 三参版本，导致编译失败。
         val treeDocId = DocumentsContract.getTreeDocumentId(rootUri)
-        val targetDocId = if (parts.size == 1) "$treeDocId/${parts[0]}" else "$treeDocId/${parts.joinToString("/")}"
+        val targetDocId = resolveDocId(rootUri, treeDocId, relativePath) ?: return null
         return DocumentsContract.buildDocumentUriUsingTree(rootUri, targetDocId)
     }
 

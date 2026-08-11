@@ -936,7 +936,9 @@ private fun openAvnc(context: Context) {
     try {
         context.startActivity(marketIntent)
     } catch (_: ActivityNotFoundException) {
-        runCatching { context.startActivity(webIntent) }
-        Toast.makeText(context, "未安装 AVNC", Toast.LENGTH_SHORT).show()
+        // 市场未安装时退到 GitHub 主页；只有网页也打不开才提示用户
+        if (!runCatching { context.startActivity(webIntent) }.isSuccess) {
+            Toast.makeText(context, "未安装 AVNC，也无法打开浏览器", Toast.LENGTH_SHORT).show()
+        }
     }
 }

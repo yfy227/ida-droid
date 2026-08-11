@@ -256,7 +256,12 @@ class FileTransferManager(
 
     private fun saveManifest(manifest: Manifest) {
         ensureReady()
-        manifestFile.writeText(json.encodeToString(Manifest.serializer(), manifest))
+        val tmp = File(manifestFile.parentFile, "${manifestFile.name}.tmp")
+        tmp.writeText(json.encodeToString(Manifest.serializer(), manifest))
+        if (!tmp.renameTo(manifestFile)) {
+            manifestFile.writeText(tmp.readText())
+            tmp.delete()
+        }
     }
 
     private fun queryDisplayName(uri: Uri): String? {

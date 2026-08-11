@@ -302,18 +302,20 @@ object DeepIndexScriptBuilder {
             local key="${D}1"; shift
             local value="${D}*"
             memory_init
-            # Append entry (naive JSON manipulation — no jq dependency)
-            local escaped_val
+            # Escape key and value for JSON string context
+            local escaped_key escaped_val
+            escaped_key=$(printf '%s' "${D}{key}" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
             escaped_val=$(printf '%s' "${D}value" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
             local entry
-            entry=$(printf '{"key":"%s","value":"%s","file":"","ts":"%s"}' "${D}{key}" "${D}{escaped_val}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
-            # Insert before closing bracket
+            entry=$(printf '{"key":"%s","value":"%s","file":"","ts":"%s"}' "${D}{escaped_key}" "${D}{escaped_val}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+            # Pass key, memory_file, entry as argv to avoid Python/JSON injection
             python3 -c "
 import json,sys
-with open('${D}MEMORY_FILE','r') as f: d=json.load(f)
-d['entries']=[e for e in d['entries'] if e.get('key')!='${D}{key}'] + [${D}{entry}]
-with open('${D}MEMORY_FILE','w') as f: json.dump(d,f,indent=2,ensure_ascii=False)
-" 2>/dev/null || sed -i "s/]}$/,${D}entry]}/" "${D}MEMORY_FILE"
+key=sys.argv[1]
+with open(sys.argv[2],'r') as f: d=json.load(f)
+d['entries']=[e for e in d['entries'] if e.get('key')!=key] + [json.loads(sys.argv[3])]
+with open(sys.argv[2],'w') as f: json.dump(d,f,indent=2,ensure_ascii=False)
+" "${D}{key}" "${D}MEMORY_FILE" "${D}{entry}" 2>/dev/null || sed -i "s|]}$|,${D}{entry}]}|" "${D}MEMORY_FILE"
             echo "deep-index: stored memory '${D}key'"
         }
 
@@ -322,25 +324,25 @@ with open('${D}MEMORY_FILE','w') as f: json.dump(d,f,indent=2,ensure_ascii=False
             memory_init
             local query="${D}1"
             python3 -c "
-import json
-with open('${D}MEMORY_FILE','r') as f: d=json.load(f)
-q='${D}{query}'.lower().split()
+import json,sys
+with open(sys.argv[1],'r') as f: d=json.load(f)
+q=sys.argv[2].lower().split()
 for e in d['entries']:
     text=(e.get('key','')+' '+e.get('value','')).lower()
     score=sum(1 for w in q if w in text)
-    if score: print(f'  [{score}] {e[\"key\"]}: {e[\"value\"][:120]}')
-" 2>/dev/null || grep -i "${D}{query}" "${D}MEMORY_FILE" | head -10
+    if score: print(f'  [{score}] {e["key"]}: {e["value"][:120]}')
+" "${D}MEMORY_FILE" "${D}{query}" 2>/dev/null || grep -i -- "${D}{query}" "${D}MEMORY_FILE" | head -10
         }
 
         cmd_memory_list() {
             memory_init
             python3 -c "
-import json
-with open('${D}MEMORY_FILE','r') as f: d=json.load(f)
+import json,sys
+with open(sys.argv[1],'r') as f: d=json.load(f)
 for e in d['entries']:
-    print(f'  {e[\"key\"]}: {e[\"value\"][:100]}')
-print(f'({len(d[\"entries\"])} memories)')
-" 2>/dev/null || echo "  (memory.json not readable)"
+    print(f'  {e["key"]}: {e["value"][:100]}')
+print(f'({len(d["entries"])} memories)')
+" "${D}MEMORY_FILE" 2>/dev/null || echo "  (memory.json not readable)"
         }
 
         cmd_memory_context() {
@@ -365,7 +367,7 @@ print(f'({len(d[\"entries\"])} memories)')
                 echo "  symbols: (not indexed — run 'deep-index index')"
             fi
             if [ -f "${D}MEMORY_FILE" ]; then
-                local mc; mc=$(python3 -c "import json;print(len(json.load(open('${D}MEMORY_FILE'))['entries']))" 2>/dev/null || echo '?')
+                local mc; mc=$(python3 -c "import json,sys;print(len(json.load(open(sys.argv[1]))['entries']))" "${D}MEMORY_FILE" 2>/dev/null || echo '?')
                 echo "  memories: ${D}mc"
             else
                 echo "  memories: 0"

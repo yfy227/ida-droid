@@ -20,17 +20,6 @@ class IdaProotRuntime(
     /** 用户设置的工作区路径（容器内可见路径） */
     private val workspacePath: String get() = settings.envSettings.value.workspacePath.ifBlank { DEFAULT_WORKSPACE }
 
-    /** 用户设置的工作区在主机文件系统上的路径（用于 proot --bind） */
-    private val workspaceHostPath: File? get() {
-        val ws = workspacePath.removePrefix("/")
-        // /root/pi_workspace → rootfsDir/root/pi_workspace
-        val hostFile = File(rootfsDir, ws)
-        if (hostFile.isDirectory) return hostFile
-        // 尝试 /sdcard 下的路径（proot 已绑定 /sdcard）
-        val sdcardFile = File("/sdcard", ws.removePrefix("sdcard/").removePrefix("storage/emulated/0/"))
-        if (sdcardFile.isDirectory) return sdcardFile
-        return null
-    }
 
     data class LaunchSpec(
         val command: List<String>,

@@ -136,8 +136,10 @@ class RootfsImporter(
                 }
                 report(ImportStage.Validating, 0.86f, validationMessage)
 
+                val workspacePath = dev.idadroid.settings.IdaDroidSettings(appContext)
+                    .envSettings.value.workspacePath.trimEnd('/').ifBlank { PiWorkspaceMaterializer.DEFAULT_WORKSPACE }
                 report(ImportStage.MaterializingWorkspace, 0.88f, "创建工作区与 IDAdroid 脚本")
-                workspaceMaterializer.materialize(stagingRootfs)
+                workspaceMaterializer.materialize(stagingRootfs, workspacePath)
 
                 val metadata = EnvironmentMetadata(
                     envId = paths.envId,
@@ -152,7 +154,8 @@ class RootfsImporter(
                 if (!validation.ok) {
                     File(stagingEnv, ".rootfs-extracted").writeText("completedAt=${Instant.now()}\n")
                     File(stagingEnv, ".setup-complete").delete()
-                    val preservedAt = preserveFailedStaging(stagingEnv)
+                    val preservedAt = runCatching { preserveFailedStaging(stagingEnv) }
+                        .getOrElse { stagingEnv?.absolutePath ?: "(unknown)" }
                     stagingLog = null
                     stagingEnv = null
                     report(
@@ -193,7 +196,7 @@ class RootfsImporter(
                             )
                         )
                         File(failedEnv, ".setup-complete").delete()
-                        preserveFailedStaging(failedEnv)
+                        runCatching { preserveFailedStaging(failedEnv) }.getOrDefault(failedEnv.absolutePath)
                     }
                 if (preservedAt != null) {
                     stagingEnv = null
@@ -294,6 +297,7 @@ class RootfsImporter(
     }
 
     private fun handleSymlink(linkFile: File, targetPath: String) {
+        if (targetPath.isBlank()) return // skip entries with no link target
         linkFile.parentFile?.mkdirs()
         deletePathIfExists(linkFile)
         try {
@@ -304,6 +308,7 @@ class RootfsImporter(
     }
 
     private fun handleHardLink(rootfsDir: File, linkFile: File, targetPath: String) {
+        if (targetPath.isBlank()) return // skip entries with no link target
         linkFile.parentFile?.mkdirs()
         deletePathIfExists(linkFile)
         val normalizedTarget = targetPath.removePrefix("/")

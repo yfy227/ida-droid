@@ -216,11 +216,3 @@ data class ChatMessage(
     val toolResultMeta: ToolResultMeta? = null,
     val toolStatus: String? = null
 )
-
-sealed interface PiRuntimeEvent {
-    data class RpcEvent(val event: kotlinx.serialization.json.JsonObject) : PiRuntimeEvent
-    data class RawStdout(val line: String) : PiRuntimeEvent
-    data class Stderr(val text: String) : PiRuntimeEvent
-    data class Status(val status: String, val error: String? = null) : PiRuntimeEvent
-    data class Exited(val exitCode: Int?, val error: String? = null) : PiRuntimeEvent
-}
