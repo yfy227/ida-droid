@@ -85,7 +85,13 @@ class ConversationManager(
 
     private val mutex = Mutex()
     private var current: Conversation? = null
-    private val toolBus = ToolEventBus(context, proot, paths)
+    private val toolContext = ToolContext(proot, paths, dev.idadroid.settings.IdaDroidSettings(context.applicationContext))
+    private val toolRegistry = ToolRegistry().apply {
+        register(ShellTool())
+        register(ReadFileTool())
+        register(WriteFileTool())
+        register(ListDirTool())
+    }
 
     /** 累计 token 使用量 */
     @Volatile private var totalPromptTokens: Int = 0
@@ -143,7 +149,7 @@ class ConversationManager(
         trimContextIfNeeded(conv)
 
         val client = ChatHttpClient(config.baseUrl, config.apiKey, config.model, config.providerId)
-        val tools = toolBus.toolDefinitions()
+        val tools = toolRegistry.definitions()
 
         onEvent(ConvEvent.PhaseChange("connecting"))
 
@@ -338,10 +344,8 @@ class ConversationManager(
     ): ToolResult {
         return try {
             withTimeoutOrNull(config.toolTimeoutMs) {
-                val raw = toolBus.execute(tc.name, tc.arguments)
-                // 统一成功/失败判断
-                val success = toolBus.isToolResultSuccess(tc.name, raw)
-                ToolResult(success, raw, null)
+                val outcome = toolRegistry.execute(tc.name, tc.arguments, toolContext)
+                ToolResult(outcome.success, outcome.output, outcome.error)
             } ?: ToolResult(false, "工具执行超时（${config.toolTimeoutMs / 1000}s）", "Timeout")
         } catch (e: CancellationException) {
             throw e

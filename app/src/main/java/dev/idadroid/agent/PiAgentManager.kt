@@ -60,7 +60,7 @@ class PiAgentManager(
     @Volatile private var suppressAbortError = false
 
     // ==================== 新架构：分层对话引擎 ====================
-    // Layer 1 (ChatHttpClient) + Layer 2 (ToolEventBus) + Layer 3 (ConversationManager)
+    // Layer 1 (ChatHttpClient) + Layer 2 (ToolRegistry) + Layer 3 (ConversationManager)
     // 取代 pi --mode rpc 持久管道，直接用 HTTPS + function calling
     private val conversationManager = ConversationManager(appContext, paths, dev.idadroid.proot.IdaProotRuntime(appContext, paths))
     @Volatile private var currentSendJob: Job? = null
