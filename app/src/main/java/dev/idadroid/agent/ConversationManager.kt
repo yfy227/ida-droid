@@ -225,7 +225,7 @@ class ConversationManager(
     private suspend fun collectLlmStream(
         client: ChatHttpClient,
         conv: Conversation,
-        tools: List<ToolEventBus.ToolDefinition>,
+        tools: List<ChatHttpClient.ToolDefinition>,
         config: ConvConfig,
         onEvent: (ConvEvent) -> Unit
     ): LlmRoundResult {
