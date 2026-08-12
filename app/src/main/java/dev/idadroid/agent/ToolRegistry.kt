@@ -4,8 +4,13 @@ import dev.idadroid.env.EnvironmentPaths
 import dev.idadroid.proot.IdaProotRuntime
 import dev.idadroid.settings.IdaDroidSettings
 import java.io.File
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 /**
@@ -42,7 +47,7 @@ class ToolRegistry {
     /** 按名称查找工具 */
     fun find(name: String): AgentTool? = tools[name]
 
-    /** 执行工具调用 */
+    /** 执行工具调用 — 内置审计日志和异常保护 */
     suspend fun execute(
         name: String,
         argsJson: String,
@@ -51,12 +56,21 @@ class ToolRegistry {
         val tool = tools[name]
             ?: return ToolOutcome.error("未知工具 '$name'，可用: ${tools.keys.joinToString(", ")}")
 
+        val startTime = System.currentTimeMillis()
         return try {
-            tool.execute(argsJson, context)
+            val result = tool.execute(argsJson, context)
+            val elapsed = System.currentTimeMillis() - startTime
+            android.util.Log.d("ToolRegistry",
+                "工具 $name 执行${if (result.success) "成功" else "失败"} (${elapsed}ms)")
+            result
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            ToolOutcome.error("工具 '$name' 执行异常: ${e.message ?: e::class.simpleName ?: "未知错误"}")
+            val elapsed = System.currentTimeMillis() - startTime
+            val msg = e.message ?: e::class.simpleName ?: "未知错误"
+            android.util.Log.w("ToolRegistry",
+                "工具 $name 执行异常 (${elapsed}ms): $msg")
+            ToolOutcome.error("工具 '$name' 执行异常: $msg")
         }
     }
 
@@ -134,6 +148,9 @@ data class ToolOutcome(
  * - [description] 工具描述（给 AI 看的说明）
  * - [parameters] JSON Schema 参数定义
  * - [execute] 执行逻辑
+ *
+ * 推荐继承 [AbstractAgentTool] 而非直接实现此接口，
+ * 以获得共享的 Json 实例和参数解析辅助方法。
  */
 interface AgentTool {
     val name: String
@@ -152,6 +169,37 @@ interface AgentTool {
      * @return 结构化执行结果
      */
     suspend fun execute(argsJson: String, context: ToolContext): ToolOutcome
+}
+
+/**
+ * 工具基类 — 共享 Json 实例和参数解析辅助方法。
+ *
+ * 子类只需实现 [doExecute] 方法，参数解析由基类处理。
+ * 共享 Json 实例避免每个工具重复创建。
+ */
+abstract class AbstractAgentTool : AgentTool {
+    /** 共享 Json 实例 — 所有工具复用 */
+    protected val json = Json { ignoreUnknownKeys = true; isLenient = true }
+
+    /**
+     * 解析参数 JSON 字符串为 JsonObject。
+     * 解析失败返回 null，调用方应处理 null 并返回 ToolOutcome.error。
+     */
+    protected fun parseArgs(argsJson: String): JsonObject? = try {
+        json.parseToJsonElement(argsJson).jsonObject
+    } catch (_: Exception) { null }
+
+    /** 获取字符串参数，缺失时返回 null */
+    protected fun JsonObject.getString(key: String): String? =
+        this[key]?.jsonPrimitive?.contentOrNull
+
+    /** 获取整数参数，缺失或无效时返回 null */
+    protected fun JsonObject.getInt(key: String): Int? =
+        this[key]?.jsonPrimitive?.intOrNull
+
+    /** 获取布尔参数，缺失时返回 null */
+    protected fun JsonObject.getBoolean(key: String): Boolean? =
+        this[key]?.let { it.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() }
 }
 
 /**

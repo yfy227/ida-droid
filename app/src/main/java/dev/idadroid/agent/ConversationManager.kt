@@ -91,6 +91,9 @@ class ConversationManager(
         register(ReadFileTool())
         register(WriteFileTool())
         register(ListDirTool())
+        register(SearchFilesTool())
+        register(DeleteFileTool())
+        register(FileInfoTool())
     }
 
     /** 累计 token 使用量 */
@@ -160,7 +163,7 @@ class ConversationManager(
             // 处理错误
             if (llmResult.error != null) {
                 if (llmResult.textBuffer.isNotEmpty()) {
-                    conv.messages.add(ChatHttpClient.ChatMessageDto(
+                    conv.appendMessage(ChatHttpClient.ChatMessageDto(
                         role = "assistant",
                         content = llmResult.textBuffer,
                         toolCalls = llmResult.finishToolCalls
@@ -243,7 +246,7 @@ class ConversationManager(
 
         try {
             client.chat(
-                messages = conv.messages.toList(),
+                messages = conv.snapshotMessages(),
                 tools = tools,
                 systemPrompt = config.systemPrompt,
                 thinkingLevel = config.thinkingLevel,
@@ -309,11 +312,11 @@ class ConversationManager(
         conv: Conversation,
         config: ConvConfig,
         onEvent: (ConvEvent) -> Unit
-    ): List<Pair<ChatHttpClient.ToolCallDto, ToolResult>> {
+    ): List<Pair<ChatHttpClient.ToolCallDto, ToolOutcome>> {
         if (toolCalls.size == 1) {
             // 单工具调用 — 直接执行，无需 async 开销
             val tc = toolCalls.first()
-            if (conv.aborted) return listOf(tc to ToolResult(false, "已中止", "Aborted"))
+            if (conv.aborted) return listOf(tc to ToolOutcome.error("已中止"))
             onEvent(ConvEvent.ToolCallStart(tc.id, tc.name, tc.arguments))
             val result = executeSingleTool(tc, config)
             onEvent(ConvEvent.ToolCallResult(tc.id, tc.name, result.output, result.success))
@@ -325,7 +328,7 @@ class ConversationManager(
         val deferreds = toolCalls.map { tc ->
             scope.async {
                 if (conv.aborted) {
-                    ToolResult(false, "已中止", "Aborted")
+                    ToolOutcome.error("已中止")
                 } else {
                     onEvent(ConvEvent.ToolCallStart(tc.id, tc.name, tc.arguments))
                     val result = executeSingleTool(tc, config)
@@ -341,17 +344,16 @@ class ConversationManager(
     private suspend fun executeSingleTool(
         tc: ChatHttpClient.ToolCallDto,
         config: ConvConfig
-    ): ToolResult {
+    ): ToolOutcome {
         return try {
             withTimeoutOrNull(config.toolTimeoutMs) {
-                val outcome = toolRegistry.execute(tc.name, tc.arguments, toolContext)
-                ToolResult(outcome.success, outcome.output, outcome.error)
-            } ?: ToolResult(false, "工具执行超时（${config.toolTimeoutMs / 1000}s）", "Timeout")
+                toolRegistry.execute(tc.name, tc.arguments, toolContext)
+            } ?: ToolOutcome.error("工具执行超时（${config.toolTimeoutMs / 1000}s）")
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             val msg = e.message ?: e::class.simpleName ?: "未知错误"
-            ToolResult(false, "工具执行错误: $msg", msg)
+            ToolOutcome.error("工具执行错误: $msg")
         }
     }
 
@@ -432,10 +434,3 @@ class ConversationManager(
         current = Conversation(config, messages.toMutableList())
     }
 }
-
-/** 结构化工具执行结果 */
-data class ToolResult(
-    val success: Boolean,
-    val output: String,
-    val error: String?
-)
