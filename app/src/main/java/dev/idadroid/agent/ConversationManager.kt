@@ -399,14 +399,35 @@ class ConversationManager(
         }
     }
 
-    /** 粗略估算消息列表的 token 数 (1 token ≈ 4 chars for English, ≈ 2 chars for CJK) */
+    /**
+     * 估算消息列表的 token 数。
+     *
+     * 改进：区分中文字符（~2 chars/token）和 ASCII 字符（~4 chars/token），
+     * 比旧的统一 chars/3 估算更准确，减少上下文窗口浪费或溢出。
+     */
     private fun estimateTokens(messages: List<ChatHttpClient.ChatMessageDto>): Int {
         return messages.sumOf { msg ->
             val content = msg.content.orEmpty()
             val toolCallsSize = msg.toolCalls.sumOf { it.arguments.length + it.name.length }
-            // 简化估算：英文约 4 chars/token，中文约 2 chars/token，取中间值 3
-            (content.length + toolCallsSize) / 3
+            estimateTokensForText(content) + estimateTokensForText(toolCallsSize.toString())
         }
+    }
+
+    /** 估算纯文本的 token 数 — 区分 CJK 和 ASCII */
+    private fun estimateTokensForText(text: String): Int {
+        if (text.isEmpty()) return 0
+        var cjkChars = 0
+        var asciiChars = 0
+        for (ch in text) {
+            val code = ch.code
+            if (code in 0x4E00..0x9FFF || code in 0x3400..0x4DBF || code in 0x3000..0x30FF) {
+                cjkChars++
+            } else {
+                asciiChars++
+            }
+        }
+        // CJK: ~2 chars/token, ASCII: ~4 chars/token
+        return (cjkChars / 2 + asciiChars / 4).coerceAtLeast(1)
     }
 
     /** 中止当前对话 */

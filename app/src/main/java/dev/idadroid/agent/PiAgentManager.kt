@@ -523,11 +523,8 @@ class PiAgentManager(
 
     fun compact(customInstructions: String? = null) {
         // 上下文压缩：保留 system 消息和最近 1/3 的对话历史，
-        // 生成一条摘要消息替代被移除的内容。
+        // 用 LLM 生成摘要消息替代被移除的内容（替代简单截取）。
         scope.launch {
-            // 用 sendMutex 串行化，防止 compact 与 sendPrompt 并发执行：
-            // compact 会 reset() ConversationManager，若与正在进行的对话流并发，
-            // 会导致对话流断裂、消息丢失。
             sendMutex.withLock {
                 val sessionId = _state.value.activeSessionId ?: return@withLock
                 val messages = _state.value.messages
@@ -540,31 +537,12 @@ class PiAgentManager(
                 val toSummarize = messages.dropLast(keepCount)
                 val kept = messages.takeLast(keepCount)
 
-                // 生成简单摘要
-                val summary = buildString {
-                    append("[上下文压缩]\n")
-                    append("已压缩 ${toSummarize.size} 条早期消息。\n")
-                    if (!customInstructions.isNullOrBlank()) {
-                        append("用户指示：$customInstructions\n")
-                    }
-                    append("\n压缩前的关键内容摘要：\n")
-                    toSummarize.filter { it.role == "user" || it.role == "assistant" }
-                        .takeLast(5)
-                        .forEach { msg ->
-                            val role = if (msg.role == "user") "用户" else "助手"
-                            val preview = msg.text.take(200).replace("\n", " ")
-                            append("- $role: $preview...\n")
-                        }
-                }
+                // 用 LLM 生成摘要（异步，不阻塞 UI）
+                val summary = generateLlmSummary(toSummarize, customInstructions)
 
-                // 在 reset() 之前取出完整的 API 级 ChatMessageDto 列表，
-                // 截取保留部分（对应 UI 的 kept 消息，即最后 keepCount 条）。
-                // 不从 UI 级 ChatMessage 转换，因为 UI→DTO 映射会丢失 toolCalls
-                // 字段，导致后续 tool 消息缺少前驱 assistant(tool_calls) 而 API 报错。
                 val apiMessages = conversationManager.getMessages()
                 val keptApiMessages = apiMessages.takeLast(minOf(keepCount, apiMessages.size))
 
-                // 重置 ConversationManager 并用压缩后的历史恢复
                 conversationManager.reset()
                 val convConfig = sessionId.let { id ->
                     val session = repo.listSessions().firstOrNull { it.id == id }
@@ -577,14 +555,124 @@ class PiAgentManager(
                 _state.update { it.copy(messages = listOf(
                     ChatMessage(newMessageId(), "system", summary, System.currentTimeMillis())
                 ) + kept) }
-                // 不调用 refresh()：refresh() → loadMessages() → loadMessagesInternal()
-                // 会用 newMessageId() 给每条消息重新生成 UUID，导致 LazyColumn 的 key
-                // 全部失效、全列表重组 + 闪烁/滚动跳跃。compact 后 state 中的消息列表
-                // 已经是正确的（新 summary + 保留的 kept 消息，kept 保留原 ID），
-                // 只需刷新 session 列表即可。
                 _state.update { it.copy(sessions = repo.listSessions()) }
             }
         }
+    }
+
+    /**
+     * 用 LLM 生成上下文摘要 — 替代旧版的简单截取。
+     * 如果 LLM 调用失败，回退到简单截取摘要。
+     */
+    private suspend fun generateLlmSummary(
+        toSummarize: List<ChatMessage>,
+        customInstructions: String?
+    ): String = withContext(Dispatchers.IO) {
+        val snapshot = configManager.readSnapshot()
+        val userConfig = configManager.readUserConfig()
+        val provider = (snapshot.defaultProvider).trim().ifBlank { "openai-generic" }
+        val model = snapshot.defaultModel.trim().ifBlank {
+            return@withContext buildFallbackSummary(toSummarize, customInstructions)
+        }
+
+        // 复用 resolveConvConfig 中的 provider/env 逻辑
+        val envKeyForProvider = when (provider) {
+            "openai-generic", "custom", "openai" -> listOf("OPENAI_API_KEY")
+            "anthropic" -> listOf("ANTHROPIC_API_KEY")
+            "deepseek" -> listOf("DEEPSEEK_API_KEY")
+            "google" -> listOf("GOOGLE_API_KEY", "GEMINI_API_KEY")
+            "openrouter" -> listOf("OPENROUTER_API_KEY")
+            "moonshot" -> listOf("MOONSHOT_API_KEY")
+            "dashscope" -> listOf("DASHSCOPE_API_KEY")
+            "ark" -> listOf("ARK_API_KEY")
+            "baidu" -> listOf("BAIDU_API_KEY")
+            "hunyuan" -> listOf("HUNYUAN_API_KEY")
+            "siliconflow" -> listOf("SILICONFLOW_API_KEY")
+            "mistral" -> listOf("MISTRAL_API_KEY")
+            "groq" -> listOf("GROQ_API_KEY")
+            "xai" -> listOf("XAI_API_KEY")
+            "together" -> listOf("TOGETHER_API_KEY")
+            else -> emptyList()
+        }
+        val apiKey = envKeyForProvider.firstNotNullOfOrNull { keyName ->
+            userConfig.env[keyName]?.takeIf { it.isNotBlank() }
+        } ?: userConfig.env.entries.firstOrNull { (_, v) -> v.isNotBlank() }?.value
+            ?: return@withContext buildFallbackSummary(toSummarize, customInstructions)
+
+        val modelsObj = runCatching {
+            dev.idadroid.util.JsonFormats.pretty.parseToJsonElement(snapshot.modelsText).let {
+                (it as? JsonObject)?.get("providers") as? JsonObject
+            }
+        }.getOrNull()
+        val providerObj = modelsObj?.get(provider) as? JsonObject
+            ?: modelsObj?.get("openai-generic") as? JsonObject
+            ?: modelsObj?.get("openai") as? JsonObject
+        val baseUrl = providerObj?.get("baseURL")?.jsonPrimitive?.contentOrNull
+            ?: providerObj?.get("baseUrl")?.jsonPrimitive?.contentOrNull
+            ?: when (provider) {
+                "openai-generic", "custom", "openai" -> "https://api.openai.com/v1"
+                "deepseek" -> "https://api.deepseek.com/v1"
+                "anthropic" -> "https://api.anthropic.com/v1"
+                else -> return@withContext buildFallbackSummary(toSummarize, customInstructions)
+            }
+
+        val prompt = buildString {
+            append("请将以下对话历史压缩为简洁的摘要，保留关键技术发现、分析结论和未完成任务。\n")
+            if (!customInstructions.isNullOrBlank()) {
+                append("用户特别要求：$customInstructions\n")
+            }
+            append("\n--- 对话历史 ---\n")
+            toSummarize.filter { it.role == "user" || it.role == "assistant" }
+                .forEach { msg ->
+                    val role = if (msg.role == "user") "用户" else "助手"
+                    val preview = msg.text.take(500)
+                    append("[$role] $preview\n")
+                }
+            append("--- 摘要 ---\n")
+        }
+
+        try {
+            val client = ChatHttpClient(baseUrl, apiKey, model, provider)
+            val response = StringBuffer()
+            client.chat(
+                messages = listOf(ChatHttpClient.ChatMessageDto(role = "user", content = prompt)),
+                tools = emptyList(),
+                systemPrompt = "你是一个对话摘要助手。请简洁地总结对话中的关键信息。",
+                thinkingLevel = null,
+                temperature = 0.3,
+                maxTokens = 2000,
+                topP = null
+            ).collect { event ->
+                when (event) {
+                    is ChatHttpClient.StreamEvent.TextDelta -> response.append(event.text)
+                    else -> {}
+                }
+            }
+            val result = response.toString().trim()
+            if (result.isNotBlank()) "[上下文压缩]\n$result" else buildFallbackSummary(toSummarize, customInstructions)
+        } catch (e: Exception) {
+            buildFallbackSummary(toSummarize, customInstructions)
+        }
+    }
+
+    /** 回退摘要 — LLM 不可用时使用 */
+    private fun buildFallbackSummary(
+        toSummarize: List<ChatMessage>,
+        customInstructions: String?
+    ): String = buildString {
+        append("[上下文压缩]\n")
+        append("已压缩 ${toSummarize.size} 条早期消息。\n")
+        if (!customInstructions.isNullOrBlank()) {
+            append("用户指示：$customInstructions\n")
+        }
+        append("\n压缩前的关键内容摘要：\n")
+        toSummarize.filter { it.role == "user" || it.role == "assistant" }
+            .takeLast(5)
+            .forEach { msg ->
+                val role = if (msg.role == "user") "用户" else "助手"
+                val preview = msg.text.take(200).replace("\n", " ")
+                append("- $role: $preview...\n")
+            }
     }
 
     fun getPiConfigSnapshot(): PiConfigSnapshot = configManager.readSnapshot()
