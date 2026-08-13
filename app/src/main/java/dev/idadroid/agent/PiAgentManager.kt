@@ -62,7 +62,12 @@ class PiAgentManager(
     // ==================== 新架构：分层对话引擎 ====================
     // Layer 1 (ChatHttpClient) + Layer 2 (ToolRegistry) + Layer 3 (ConversationManager)
     // 取代 pi --mode rpc 持久管道，直接用 HTTPS + function calling
-    private val conversationManager = ConversationManager(appContext, paths, dev.idadroid.proot.IdaProotRuntime(appContext, paths))
+    private val conversationManager = ConversationManager(appContext, paths, dev.idadroid.proot.IdaProotRuntime(appContext, paths)).apply {
+        // 自动压缩回调：当上下文溢出时用 LLM 生成摘要，替代直接丢弃消息
+        autoCompactCallback = { messages ->
+            autoCompactMessages(messages)
+        }
+    }
     @Volatile private var currentSendJob: Job? = null
 
     // ==================== 流式 delta 合并器 ====================
@@ -675,6 +680,65 @@ class PiAgentManager(
             }
     }
 
+    /**
+     * 自动压缩消息历史 — 由 ConversationManager.trimContextIfNeeded 触发。
+     *
+     * 流程：
+     * 1. 将 API 级 ChatMessageDto 转为 UI 级 ChatMessage
+     * 2. 调用 generateLlmSummary 生成 LLM 摘要
+     * 3. 重置 ConversationManager 并用压缩后的历史恢复
+     * 4. 更新 UI 状态
+     *
+     * 返回 true 表示压缩成功，false 表示失败（ConversationManager 会回退到直接截断）。
+     */
+    private suspend fun autoCompactMessages(messages: List<ChatHttpClient.ChatMessageDto>): Boolean {
+        if (messages.size <= 6) return false
+
+        val keepCount = maxOf(4, messages.size / 3)
+        val toSummarizeDto = messages.dropLast(keepCount)
+        val keptDto = messages.takeLast(keepCount)
+
+        // 转为 UI 级 ChatMessage 用于 generateLlmSummary
+        val toSummarizeUi = toSummarizeDto.mapNotNull { msg ->
+            when (msg.role) {
+                "user" -> ChatMessage(newMessageId(), "user", msg.content ?: "", System.currentTimeMillis())
+                "assistant" -> ChatMessage(newMessageId(), "assistant", msg.content ?: "", System.currentTimeMillis())
+                else -> null
+            }
+        }
+        if (toSummarizeUi.isEmpty()) return false
+
+        // 生成摘要
+        val summary = generateLlmSummary(toSummarizeUi, null)
+
+        // 重置并恢复
+        val sessionId = _state.value.activeSessionId ?: return false
+        val session = repo.listSessions().firstOrNull { it.id == sessionId } ?: return false
+        val convConfig = resolveConvConfig(sessionId, session) ?: return false
+
+        conversationManager.reset()
+        conversationManager.restoreFromMessages(keptDto, convConfig)
+
+        // 更新 UI 状态
+        val keptUi = keptDto.mapNotNull { msg ->
+            when (msg.role) {
+                "user" -> ChatMessage(newMessageId(), "user", msg.content ?: "", System.currentTimeMillis())
+                "assistant" -> ChatMessage(newMessageId(), "assistant", msg.content ?: "", System.currentTimeMillis())
+                "tool" -> ChatMessage(newMessageId(), "tool", msg.content ?: "", System.currentTimeMillis(),
+                    toolCallId = msg.toolCallId, toolName = msg.name, toolResult = msg.content, toolStatus = "done")
+                "system" -> ChatMessage(newMessageId(), "system", msg.content ?: "", System.currentTimeMillis())
+                else -> null
+            }
+        }
+
+        _state.update { it.copy(messages = listOf(
+            ChatMessage(newMessageId(), "system", summary, System.currentTimeMillis())
+        ) + keptUi) }
+
+        android.util.Log.i("PiAgentManager", "自动压缩完成: ${toSummarizeDto.size} 条消息 → 摘要")
+        return true
+    }
+
     fun getPiConfigSnapshot(): PiConfigSnapshot = configManager.readSnapshot()
 
     fun savePiConfig(snapshot: PiConfigSnapshot) {
@@ -842,9 +906,13 @@ class PiAgentManager(
     }
 
     private fun appendSystemError(message: String) {
-        // 主动 abort 时不显示 abort 错误
+        // 主动 abort 时不显示 abort 相关错误
         if (suppressAbortError) {
-            if (message.contains("abort", ignoreCase = true) || message.contains("Request was aborted")) {
+            // 匹配英文 "abort"/"cancelled" 和中文 "已中止"/"已取消"
+            if (message.contains("abort", ignoreCase = true) ||
+                message.contains("cancel", ignoreCase = true) ||
+                message.contains("已中止") ||
+                message.contains("已取消")) {
                 suppressAbortError = false
                 return
             }

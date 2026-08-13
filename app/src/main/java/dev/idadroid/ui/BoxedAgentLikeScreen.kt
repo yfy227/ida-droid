@@ -2655,7 +2655,7 @@ private fun PiSettingsTab(
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { ElevatedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) { Text("Pi config", fontWeight = FontWeight.Bold); Text("PI_CODING_AGENT_DIR: ${snapshot.materializedDir}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
         item { state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) } }
-        // ── Visual AI config editor (replaces raw JSON editing) ──
+        // ── 可视化 AI 配置编辑器（取代旧的手动 JSON 编辑） ──
         item { AiConfigEditor(snapshot = snapshot, onSnapshotChange = { snapshot = it }) }
         item {
             SettingsCard("模型与运行参数") {
@@ -2667,8 +2667,8 @@ private fun PiSettingsTab(
                 OutlinedTextField(snapshot.enabledModels, { snapshot = snapshot.copy(enabledModels = it) }, label = { Text("enabledModels") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             }
         }
-        item { SettingsCard("settings.json") { CodeTextField("settings.json", snapshot.settingsText) { snapshot = snapshot.copy(settingsText = it) } } }
-        item { SettingsCard("插件与启动参数") { Text("每行一个传给 pi RPC 进程的额外参数，保存后重启 Session 生效。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp); CodeTextField("extraArgs", snapshot.extraArgsText) { snapshot = snapshot.copy(extraArgsText = it) } } }
+        // 旧的 settings.json / extraArgs / APPEND_SYSTEM.md 原始 JSON 编辑器已移除
+        // 这些功能已被 AiConfigEditor 可视化编辑器覆盖
         item { SettingsCard("系统提示词追加") { CodeTextField("APPEND_SYSTEM.md", snapshot.appendSystem) { snapshot = snapshot.copy(appendSystem = it) } } }
         item { Button(onClick = { manager.savePiConfig(snapshot) }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Save, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("保存 Pi 配置") } }
     }

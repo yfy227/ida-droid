@@ -96,6 +96,14 @@ class ConversationManager(
         register(FileInfoTool())
     }
 
+    /**
+     * 自动压缩回调 — 当 trimContextIfNeeded 检测到上下文溢出时调用。
+     *
+     * PiAgentManager 设置此回调，在自动截断前用 LLM 生成摘要，
+     * 替代直接丢弃消息。如果回调返回 false 或未设置，回退到直接截断。
+     */
+    var autoCompactCallback: (suspend (List<ChatHttpClient.ChatMessageDto>) -> Boolean)? = null
+
     /** 累计 token 使用量 */
     @Volatile private var totalPromptTokens: Int = 0
     @Volatile private var totalCompletionTokens: Int = 0
@@ -288,9 +296,11 @@ class ConversationManager(
                 }
             }
         } catch (e: CancellationException) {
+            // abort 触发的取消 — 不 emit Error/TurnEnd，避免：
+            // 1. "对话已中止" 不被 suppressAbortError 匹配（只匹配 "abort" 关键字）
+            // 2. TurnEnd 导致 setTurnActive(false) 重复调用
+            // abort() 链路会自行处理 UI 状态清理（setTurnActive + finishStreamingFlush）
             onEvent(ConvEvent.PhaseChange(null))
-            onEvent(ConvEvent.Error("对话已中止"))
-            onEvent(ConvEvent.TurnEnd)
             throw e
         }
 
@@ -358,31 +368,39 @@ class ConversationManager(
     }
 
     /**
-     * 上下文窗口管理：当消息历史的估算 token 数超过限制时，
-     * 从早期消息开始截断，保留 system 消息和最近的对话。
-     * 确保不破坏 assistant(tool_calls) → tool 结果消息的配对。
+     * 上下文窗口管理：当消息历史的估算 token 数超过限制时触发自动压缩。
+     *
+     * 优先调用 autoCompactCallback（LLM 摘要），回调不可用时回退到直接截断。
+     * 截断时保留 system 消息和最近的对话，确保不破坏 assistant() → tool 结果消息的配对。
      */
-    private fun trimContextIfNeeded(conv: Conversation) {
+    private suspend fun trimContextIfNeeded(conv: Conversation) {
         val config = conv.config
-        // 使用与 @Synchronized 方法相同的锁，确保 trim 期间不会被 appendMessage/snapshotMessages 打断
+        // 检查是否需要压缩
         synchronized(conv) {
             val msgs = conv.messages
             val estimatedTokens = estimateTokens(msgs)
             if (estimatedTokens <= config.contextTokenLimit) return
+            if (msgs.size <= 4) return
+        }
 
+        // 尝试 LLM 自动压缩 — 让 PiAgentManager 生成摘要并截断消息
+        val callback = autoCompactCallback
+        if (callback != null) {
+            val snapshot = conv.snapshotMessages()
+            val success = try { callback(snapshot) } catch (_: Exception) { false }
+            if (success) return
+        }
+
+        // 回退：直接截断（LLM 不可用或回调返回 false）
+        synchronized(conv) {
+            val msgs = conv.messages
             if (msgs.size <= 4) return
 
-            // 目标保留条数（最近的一半）
             val keepRecent = msgs.size / 2
-            // 候选截断点：从第 1 条之后开始（跳过第 0 条，通常是 system 或首条 user）
             var cutEnd = msgs.size - keepRecent
             if (cutEnd <= 1) return
 
-            // 修复 D: 向前调整截断点，循环回退直到 cutEnd 位置既不是 tool 也不是 assistant(tool_calls)
-            // 原代码用 while 检查 tool + if 检查 assistant(tool_calls) 分两步，
-            // 但 if 回退后可能落在 tool 上（while 不会重新执行），导致截断后第一条是
-            // 没有前驱 assistant(tool_calls) 的 tool 消息，API 报错。
-            // 合并为单一 while 循环：每次回退后重新检查当前 cutEnd 位置
+            // 向前调整截断点，跳过 tool/assistant() 消息
             while (cutEnd > 1) {
                 val msg = msgs[cutEnd]
                 if (msg.role == "tool" || (msg.role == "assistant" && msg.toolCalls.isNotEmpty())) {
@@ -393,7 +411,6 @@ class ConversationManager(
             }
 
             if (cutEnd > 1) {
-                // subList(1, cutEnd) 即可安全移除
                 msgs.subList(1, cutEnd).clear()
             }
         }
