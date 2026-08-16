@@ -287,6 +287,8 @@ class PiAgentManager(
                     currentSendJob = null
                     finishStreamingFlush()
                     if (_state.value.turnActive) setTurnActive(sessionId, false)
+                    // 持久化对话历史 — 防止崩溃/重启后丢失
+                    persistMessages(sessionId)
                 }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
@@ -321,6 +323,28 @@ class PiAgentManager(
             _state.update { it.copy(messagesLoading = true) }
             val messages = withContext(Dispatchers.IO) { loadMessagesInternal(sessionId) }
             _state.update { it.copy(messages = messages, messagesLoading = false) }
+        }
+    }
+
+    /**
+     * 持久化对话历史到 session 文件。
+     * 在 sendPrompt 结束后自动调用，防止崩溃/重启后丢失。
+     */
+    private suspend fun persistMessages(sessionId: String) {
+        try {
+            val messages = conversationManager.getMessages()
+            if (messages.isEmpty()) return
+            withContext(Dispatchers.IO) {
+                val session = repo.listSessions().firstOrNull { it.id == sessionId } ?: return@withContext
+                val file = session.sessionFile?.let(::sessionFileToHostFile) ?: return@withContext
+                file.parentFile?.mkdirs()
+                // 每条消息一行 JSON，便于增量读取和恢复
+                file.writeText(messages.joinToString("\n") { msg ->
+                    json.encodeToString(ChatHttpClient.ChatMessageDto.serializer(), msg)
+                } + "\n")
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("PiAgentManager", "消息持久化失败: ${e.message}")
         }
     }
 
@@ -573,53 +597,17 @@ class PiAgentManager(
         toSummarize: List<ChatMessage>,
         customInstructions: String?
     ): String = withContext(Dispatchers.IO) {
+        // 复用 resolveConvConfig 的完整 provider/env/baseUrl 解析逻辑
+        val sessionId = _state.value.activeSessionId
+        val session = sessionId?.let { repo.listSessions().firstOrNull { s -> s.id == it } }
+        val convConfig = session?.let { resolveConvConfig(it.id, it) }
+            ?: return@withContext buildFallbackSummary(toSummarize, customInstructions)
         val snapshot = configManager.readSnapshot()
-        val userConfig = configManager.readUserConfig()
-        val provider = (snapshot.defaultProvider).trim().ifBlank { "openai-generic" }
-        val model = snapshot.defaultModel.trim().ifBlank {
+        val model = (session?.model ?: snapshot.defaultModel).trim().ifBlank {
             return@withContext buildFallbackSummary(toSummarize, customInstructions)
         }
-
-        // 复用 resolveConvConfig 中的 provider/env 逻辑
-        val envKeyForProvider = when (provider) {
-            "openai-generic", "custom", "openai" -> listOf("OPENAI_API_KEY")
-            "anthropic" -> listOf("ANTHROPIC_API_KEY")
-            "deepseek" -> listOf("DEEPSEEK_API_KEY")
-            "google" -> listOf("GOOGLE_API_KEY", "GEMINI_API_KEY")
-            "openrouter" -> listOf("OPENROUTER_API_KEY")
-            "moonshot" -> listOf("MOONSHOT_API_KEY")
-            "dashscope" -> listOf("DASHSCOPE_API_KEY")
-            "ark" -> listOf("ARK_API_KEY")
-            "baidu" -> listOf("BAIDU_API_KEY")
-            "hunyuan" -> listOf("HUNYUAN_API_KEY")
-            "siliconflow" -> listOf("SILICONFLOW_API_KEY")
-            "mistral" -> listOf("MISTRAL_API_KEY")
-            "groq" -> listOf("GROQ_API_KEY")
-            "xai" -> listOf("XAI_API_KEY")
-            "together" -> listOf("TOGETHER_API_KEY")
-            else -> emptyList()
-        }
-        val apiKey = envKeyForProvider.firstNotNullOfOrNull { keyName ->
-            userConfig.env[keyName]?.takeIf { it.isNotBlank() }
-        } ?: userConfig.env.entries.firstOrNull { (_, v) -> v.isNotBlank() }?.value
-            ?: return@withContext buildFallbackSummary(toSummarize, customInstructions)
-
-        val modelsObj = runCatching {
-            dev.idadroid.util.JsonFormats.pretty.parseToJsonElement(snapshot.modelsText).let {
-                (it as? JsonObject)?.get("providers") as? JsonObject
-            }
-        }.getOrNull()
-        val providerObj = modelsObj?.get(provider) as? JsonObject
-            ?: modelsObj?.get("openai-generic") as? JsonObject
-            ?: modelsObj?.get("openai") as? JsonObject
-        val baseUrl = providerObj?.get("baseURL")?.jsonPrimitive?.contentOrNull
-            ?: providerObj?.get("baseUrl")?.jsonPrimitive?.contentOrNull
-            ?: when (provider) {
-                "openai-generic", "custom", "openai" -> "https://api.openai.com/v1"
-                "deepseek" -> "https://api.deepseek.com/v1"
-                "anthropic" -> "https://api.anthropic.com/v1"
-                else -> return@withContext buildFallbackSummary(toSummarize, customInstructions)
-            }
+        val apiKey = convConfig.apiKey
+        val baseUrl = convConfig.baseUrl
 
         val prompt = buildString {
             append("请将以下对话历史压缩为简洁的摘要，保留关键技术发现、分析结论和未完成任务。\n")
@@ -637,7 +625,7 @@ class PiAgentManager(
         }
 
         try {
-            val client = ChatHttpClient(baseUrl, apiKey, model, provider)
+            val client = ChatHttpClient(baseUrl, apiKey, model, convConfig.providerId)
             val response = StringBuffer()
             client.chat(
                 messages = listOf(ChatHttpClient.ChatMessageDto(role = "user", content = prompt)),
@@ -962,22 +950,27 @@ class PiAgentManager(
         val thinkingDelta = pendingThinkingDelta.toString()
         pendingTextDelta.setLength(0)
         pendingThinkingDelta.setLength(0)
-        _state.update { old ->
-            val messages = old.messages
-            val last = messages.lastOrNull()
-            if (last?.role == "assistant") {
-                // 只更新最后一条消息，避免全列表拷贝
-                val updatedLast = last.copy(
-                    text = last.text + textDelta,
-                    thinking = if (thinkingDelta.isNotEmpty()) (last.thinking ?: "") + thinkingDelta else last.thinking
-                )
-                // toMutableList + lastIndex 赋值比 + 新列表更高效
-                val list = messages.toMutableList()
-                list[list.lastIndex] = updatedLast
-                old.copy(messages = list)
-            } else {
-                old.copy(messages = messages + ChatMessage(newMessageId(), "assistant", textDelta, System.currentTimeMillis(), thinking = thinkingDelta.takeIf { it.isNotEmpty() }))
+        try {
+            _state.update { old ->
+                val messages = old.messages
+                val last = messages.lastOrNull()
+                if (last?.role == "assistant") {
+                    val updatedLast = last.copy(
+                        text = last.text + textDelta,
+                        thinking = if (thinkingDelta.isNotEmpty()) (last.thinking ?: "") + thinkingDelta else last.thinking
+                    )
+                    val list = messages.toMutableList()
+                    list[list.lastIndex] = updatedLast
+                    old.copy(messages = list)
+                } else {
+                    old.copy(messages = messages + ChatMessage(newMessageId(), "assistant", textDelta, System.currentTimeMillis(), thinking = thinkingDelta.takeIf { it.isNotEmpty() }))
+                }
             }
+        } catch (e: Exception) {
+            // _state.update 的 CAS 循环通常不会抛异常，
+            // 但 lambda 内部的 toMutableList/lastIndex 赋值在极端情况（如空列表）可能越界。
+            // 吞掉异常防止 flusher 崩溃导致流式输出卡死。
+            android.util.Log.w("PiAgentManager", "delta flush 异常: ${e.message}")
         }
     }
 

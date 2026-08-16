@@ -203,9 +203,13 @@ class SearchFilesTool : AbstractAgentTool() {
         val mode = args.getString("mode") ?: "content"
         val maxResults = args.getInt("max_results") ?: 50
 
+        // 转义 shell 单引号 — 防止 pattern 中的单引号导致命令注入
+        val safePattern = pattern.replace("'", "'\"'\"'")
+        val safePath = path.replace("'", "'\"'\"'")
+
         val command = when (mode) {
-            "filename" -> "find '${path}' -name '*${pattern}*' 2>/dev/null | head -${maxResults}"
-            else -> "grep -rn -- '${pattern}' '${path}' 2>/dev/null | head -${maxResults}"
+            "filename" -> "find '$safePath' -name '*${safePattern}*' 2>/dev/null | head -${maxResults}"
+            else -> "grep -rn -- '$safePattern' '$safePath' 2>/dev/null | head -${maxResults}"
         }
 
         return try {

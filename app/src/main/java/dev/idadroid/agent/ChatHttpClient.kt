@@ -217,6 +217,8 @@ class ChatHttpClient(
             }
 
             if (shouldRetry) {
+                // 清理上次失败请求的残留状态，防止部分工具调用混入下次重试
+                pendingToolCalls.clear()
                 emit(StreamEvent.Retrying(attempt + 1, retryReason, retryDelay))
                 delay(retryDelay)
                 retryDelay = (retryDelay * 2).coerceAtMost(MAX_RETRY_DELAY_MS)

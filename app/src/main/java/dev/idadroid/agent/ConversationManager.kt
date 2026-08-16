@@ -203,11 +203,12 @@ class ConversationManager(
             onEvent(ConvEvent.PhaseChange("executing_tool"))
             val toolResults = executeToolCallsParallel(llmResult.finishToolCalls, conv, config, onEvent)
 
-            // 追加所有 tool 结果消息
+            // 追加所有 tool 结果消息 — 截断超长输出防止撑爆上下文
             toolResults.forEach { (toolCall, result) ->
+                val output = truncateToolOutput(result.output, config.contextTokenLimit)
                 conv.appendMessage(ChatHttpClient.ChatMessageDto(
                     role = "tool",
-                    content = result.output,
+                    content = output,
                     toolCallId = toolCall.id,
                     name = toolCall.name
                 ))
@@ -445,6 +446,18 @@ class ConversationManager(
         }
         // CJK: ~2 chars/token, ASCII: ~4 chars/token
         return (cjkChars / 2 + asciiChars / 4).coerceAtLeast(1)
+    }
+
+    /** 工具输出截断 — 防止单个工具结果撑爆上下文窗口 */
+    private fun truncateToolOutput(output: String, contextTokenLimit: Int): String {
+        // 单个工具输出最多占上下文窗口的 1/4
+        val maxTokens = (contextTokenLimit / 4).coerceIn(2000, 16000)
+        val maxChars = maxTokens * 3 // 粗略估算：1 token ≈ 3 chars
+        if (output.length <= maxChars) return output
+        val kept = output.substring(0, maxChars)
+        val totalLines = output.count { it == '\n' }
+        val keptLines = kept.count { it == '\n' }
+        return "$kept\n\n... [输出已截断: 显示 ${keptLines}/${totalLines} 行, ${maxChars}/${output.length} 字符] ..."
     }
 
     /** 中止当前对话 */
