@@ -40,6 +40,7 @@ class ChatHttpClient(
 ) {
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false; isLenient = true }
 
+    @kotlinx.serialization.Serializable
     data class ChatMessageDto(
         val role: String,        // system / user / assistant / tool
         val content: String? = null,
@@ -49,6 +50,7 @@ class ChatHttpClient(
         val name: String? = null
     )
 
+    @kotlinx.serialization.Serializable
     data class ToolCallDto(
         val id: String,
         val name: String,
@@ -141,6 +143,8 @@ class ChatHttpClient(
 
         var retryDelay = INITIAL_RETRY_DELAY_MS
         var lastError: StreamEvent.Error? = null
+        // 工具调用增量状态 — 在重试间共享，重试前清理
+        val pendingToolCalls = mutableMapOf<Int, MutableMap<String, String>>()
 
         for (attempt in 1..MAX_RETRIES) {
             var shouldRetry = false
@@ -183,7 +187,7 @@ class ChatHttpClient(
                     }
                 } else {
                     // SSE 流式读取
-                    val streamResult = readSSEStream(conn)
+                    val streamResult = readSSEStream(conn, pendingToolCalls)
                     var hasEmitted = false
 
                     streamResult.events.forEach { event ->
@@ -321,9 +325,8 @@ class ChatHttpClient(
         topP?.let { put("top_p", it) }
     }
 
-    /** SSE 流读取 + 解析 */
-    private fun readSSEStream(connection: HttpURLConnection): StreamReadResult {
-        val pendingToolCalls = mutableMapOf<Int, MutableMap<String, String>>()
+    /** SSE 流读取 + 解析 — pendingToolCalls 由调用方传入，在重试间共享 */
+    private fun readSSEStream(connection: HttpURLConnection, pendingToolCalls: MutableMap<Int, MutableMap<String, String>>): StreamReadResult {
         val events = mutableListOf<StreamEvent>()
         var lastUsage: TokenUsage? = null
 
