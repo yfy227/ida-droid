@@ -337,7 +337,9 @@ class PiAgentManager(
             if (messages.isEmpty()) return
             withContext(Dispatchers.IO) {
                 val session = repo.listSessions().firstOrNull { it.id == sessionId } ?: return@withContext
-                val file = session.sessionFile?.let(::sessionFileToHostFile) ?: return@withContext
+                // sessionFile 为空时创建默认路径
+                val sessionFile = session.sessionFile ?: "$workspaceProotPath/.idadroid/sessions/${sessionId}.jsonl"
+                val file = sessionFileToHostFile(sessionFile) ?: return@withContext
                 file.parentFile?.mkdirs()
                 // 每条消息一行 JSON，便于增量读取和恢复
                 file.writeText(messages.joinToString("\n") { msg ->
@@ -700,13 +702,13 @@ class PiAgentManager(
         // 生成摘要
         val summary = generateLlmSummary(toSummarizeUi, null)
 
-        // 重置并恢复
-        val sessionId = _state.value.activeSessionId ?: return false
-        val session = repo.listSessions().firstOrNull { it.id == sessionId } ?: return false
-        val convConfig = resolveConvConfig(sessionId, session) ?: return false
+        // 就地替换消息列表 — 不创建新 Conversation
+        // 确保 send() 的 while 循环中持有的 conv 引用仍然有效
+        val newMessages = listOf(
+            ChatHttpClient.ChatMessageDto(role = "system", content = summary)
+        ) + keptDto
 
-        conversationManager.reset()
-        conversationManager.restoreFromMessages(keptDto, convConfig)
+        conversationManager.compactMessages(newMessages)
 
         // 更新 UI 状态
         val keptUi = keptDto.mapNotNull { msg ->
@@ -1084,13 +1086,17 @@ class PiAgentManager(
         val thinkingLevel = session.thinkingLevel ?: snapshot.defaultThinkingLevel.trim().takeIf { it.isNotBlank() }
         val systemPrompt = snapshot.appendSystem.ifBlank { defaultSystemAppendPrompt(workspaceProotPath) }
 
+        // Anthropic API 要求 max_tokens 必填，设置默认值
+        val maxTokens = if (providerId == "anthropic") 8192 else null
+
         return ConversationManager.ConvConfig(
             baseUrl = baseUrl,
             apiKey = apiKey,
             model = model,
             providerId = providerId,
             systemPrompt = systemPrompt,
-            thinkingLevel = thinkingLevel
+            thinkingLevel = thinkingLevel,
+            maxTokens = maxTokens
         )
     }
 

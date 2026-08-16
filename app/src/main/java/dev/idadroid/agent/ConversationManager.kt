@@ -81,6 +81,12 @@ class ConversationManager(
         /** 线程安全的消息快照 */
         @Synchronized
         fun snapshotMessages(): List<ChatHttpClient.ChatMessageDto> = messages.toList()
+        /** 线程安全的消息替换 — 用于 autoCompact 就地替换消息列表 */
+        @Synchronized
+        fun replaceMessages(newMessages: List<ChatHttpClient.ChatMessageDto>) {
+            messages.clear()
+            messages.addAll(newMessages)
+        }
     }
 
     private val mutex = Mutex()
@@ -141,6 +147,7 @@ class ConversationManager(
             val existing = current
             if (existing != null && existing.config.model == config.model) {
                 existing.aborted = false
+                existing.toolRound = 0  // 每次新 send() 重置工具轮次
                 existing
             } else {
                 val newConv = Conversation(config, mutableListOf())
@@ -297,10 +304,15 @@ class ConversationManager(
                 }
             }
         } catch (e: CancellationException) {
-            // abort 触发的取消 — 不 emit Error/TurnEnd，避免：
-            // 1. "对话已中止" 不被 suppressAbortError 匹配（只匹配 "abort" 关键字）
-            // 2. TurnEnd 导致 setTurnActive(false) 重复调用
-            // abort() 链路会自行处理 UI 状态清理（setTurnActive + finishStreamingFlush）
+            // abort 触发的取消 — 保存已收到的部分文本到消息历史
+            // 防止 UI 显示了部分文本但 conv.messages 缺少这条 assistant 消息
+            if (textBuffer.isNotEmpty()) {
+                conv.appendMessage(ChatHttpClient.ChatMessageDto(
+                    role = "assistant",
+                    content = textBuffer.toString(),
+                    toolCalls = finishToolCalls
+                ))
+            }
             onEvent(ConvEvent.PhaseChange(null))
             throw e
         }
@@ -472,6 +484,23 @@ class ConversationManager(
     suspend fun reset() = mutex.withLock {
         current = null
         resetTokenUsage()
+    }
+
+    /**
+     * 就地压缩消息列表 — 用于 autoCompact。
+     *
+     * 与 reset()+restoreFromMessages() 不同，此方法直接替换当前 Conversation 的消息列表，
+     * 不创建新 Conversation 对象。
+     * 这确保 send() 的 while 循环中持有的 conv 引用仍然有效。
+     *
+     * @param newMessages 压缩后的消息列表（通常包含摘要 + 保留的近期消息）
+     * @return true 如果压缩成功
+     */
+    fun compactMessages(newMessages: List<ChatHttpClient.ChatMessageDto>): Boolean {
+        val conv = current ?: return false
+        conv.replaceMessages(newMessages)
+        conv.toolRound = 0
+        return true
     }
 
     /** 从已有消息历史恢复对话 */
