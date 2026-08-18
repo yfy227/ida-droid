@@ -216,3 +216,17 @@ data class ChatMessage(
     val toolResultMeta: ToolResultMeta? = null,
     val toolStatus: String? = null
 )
+
+/** DTO → UI 模型转换 */
+fun ChatHttpClient.ChatMessageDto.toUiMessage(): ChatMessage = ChatMessage(
+    id = newMessageId(),
+    role = role,
+    text = content ?: "",
+    timestamp = System.currentTimeMillis(),
+    toolCallId = toolCallId,
+    toolName = name,
+    toolResult = content,
+    toolStatus = if (role == "tool") "done" else null
+)
+
+private fun newMessageId(): String = java.util.UUID.randomUUID().toString()

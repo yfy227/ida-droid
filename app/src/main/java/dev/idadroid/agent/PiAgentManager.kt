@@ -61,13 +61,12 @@ class PiAgentManager(
     @Volatile private var suppressAbortError = false
 
     // ==================== 新架构：分层对话引擎 ====================
-    // Layer 1 (ChatHttpClient) + Layer 2 (ToolRegistry) + Layer 3 (ConversationManager)
-    // 取代 pi --mode rpc 持久管道，直接用 HTTPS + function calling
-    private val conversationManager = ConversationManager(appContext, paths, dev.idadroid.proot.IdaProotRuntime(appContext, paths)).apply {
-        // 自动压缩回调：当上下文溢出时用 LLM 生成摘要，替代直接丢弃消息
-        autoCompactCallback = { messages ->
-            autoCompactMessages(messages)
-        }
+    // Layer 1 (ChatHttpClient) + Layer 2 (ToolExecutor) + Layer 2.5 (ContextWindow)
+    // + Layer 3 (ConversationEngine) — 替代旧 ConversationEngine
+    private val conversationEngine = ConversationEngine(
+        appContext, paths, dev.idadroid.proot.IdaProotRuntime(appContext, paths)
+    ).apply {
+        compactor = { messages -> generateLlmSummary(messages.map { it.toUiMessage() }, null) }
     }
     @Volatile private var currentSendJob: Job? = null
 
@@ -79,7 +78,7 @@ class PiAgentManager(
     // 固定节拍（约 30fps）合并 flush，既保证逐字流式的视觉流畅，又把状态
     // 更新与重组次数压到可控范围。
     //
-    // 线程安全说明：ConversationManager 的并行工具执行（executeToolCallsParallel）
+    // 线程安全说明：ConversationEngine 的并行工具执行（executeToolCallsParallel）
     // 会从多个 IO 线程同时调用 onEvent 回调，导致 handleConvEvent →
     // finishStreamingFlush / applyAssistantDeltas 从 IO 线程进入。
     // StringBuilder 不是线程安全的，deltaFlushJob / deltaStreaming 也不是 volatile，
@@ -181,7 +180,7 @@ class PiAgentManager(
     fun deleteSession(id: String) {
         scope.launch {
             runCatching {
-                conversationManager.abort()
+                conversationEngine.abort()
                 repo.deleteSession(id)
             }.onSuccess { refresh(createDefaultIfReady = true) }
                 .onFailure { error -> setError("删除 Session 失败：${error.message}") }
@@ -201,7 +200,7 @@ class PiAgentManager(
         scope.launch {
             val sessionId = id ?: _state.value.activeSessionId ?: return@launch
             // 新架构：abort 当前对话 + 更新状态
-            conversationManager.abort()
+            conversationEngine.abort()
             repo.updateRuntimeStatus(sessionId, "idle", null)
             _state.update { it.copy(status = "idle", turnActive = false, processingPhase = null, activity = "已停止") }
             refresh()
@@ -271,8 +270,8 @@ class PiAgentManager(
                         val imageUris = expanded.images.map { img ->
                             "data:${img.mimeType};base64,${img.data}"
                         }
-                        conversationManager.send(expanded.message, imageUris, convConfig) { event ->
-                            handleConvEvent(sessionId, event, promptStartTime)
+                        conversationEngine.send(expanded.message, imageUris, convConfig) { event ->
+                            handleEngineEvent(sessionId, event, promptStartTime)
                         }
                     }
                 } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
@@ -305,13 +304,13 @@ class PiAgentManager(
             val sessionId = id ?: _state.value.activeSessionId ?: return@launch
             // 标记：后续收到的 abort 相关错误事件静默处理
             suppressAbortError = true
-            // 新架构：cancel sendJob 让 ConversationManager.send() 的流收集中断
+            // 新架构：cancel sendJob 让 ConversationEngine.send() 的流收集中断
             currentSendJob?.let { job ->
                 job.cancel()
                 try { job.join() } catch (_: kotlinx.coroutines.CancellationException) {}
             }
             currentSendJob = null
-            conversationManager.abort()
+            conversationEngine.abort()
             finishStreamingFlush()
             setTurnActive(sessionId, false)
             repo.updateRuntimeStatus(sessionId, "running", null)
@@ -333,7 +332,7 @@ class PiAgentManager(
      */
     private suspend fun persistMessages(sessionId: String) {
         try {
-            val messages = conversationManager.getMessages()
+            val messages = conversationEngine.getMessages()
             if (messages.isEmpty()) return
             withContext(Dispatchers.IO) {
                 val session = repo.listSessions().firstOrNull { it.id == sessionId } ?: return@withContext
@@ -546,7 +545,7 @@ class PiAgentManager(
         scope.launch {
             val sessionId = _state.value.activeSessionId ?: return@launch
             runCatching {
-                // 新架构：auto compaction 由 ConversationManager 的 maxToolRounds 控制
+                // 新架构：auto compaction 由 ConversationEngine 的 maxToolRounds 控制
                 repo.patchSession(sessionId) { it.copy(autoCompactionEnabled = enabled, lastActiveAt = Instant.now().toString()) }
             }.onSuccess { refresh() }
                 .onFailure { error -> setError("切换 Compact 失败：${error.message}") }
@@ -572,16 +571,16 @@ class PiAgentManager(
                 // 用 LLM 生成摘要（异步，不阻塞 UI）
                 val summary = generateLlmSummary(toSummarize, customInstructions)
 
-                val apiMessages = conversationManager.getMessages()
+                val apiMessages = conversationEngine.getMessages()
                 val keptApiMessages = apiMessages.takeLast(minOf(keepCount, apiMessages.size))
 
-                conversationManager.reset()
+                conversationEngine.reset()
                 val convConfig = sessionId.let { id ->
                     val session = repo.listSessions().firstOrNull { it.id == id }
                     session?.let { resolveConvConfig(id, it) }
                 }
                 if (convConfig != null && keptApiMessages.isNotEmpty()) {
-                    conversationManager.restoreFromMessages(keptApiMessages, convConfig)
+                    conversationEngine.restoreFromMessages(keptApiMessages, convConfig)
                 }
 
                 _state.update { it.copy(messages = listOf(
@@ -672,15 +671,15 @@ class PiAgentManager(
     }
 
     /**
-     * 自动压缩消息历史 — 由 ConversationManager.trimContextIfNeeded 触发。
+     * 自动压缩消息历史 — 由 ConversationEngine.trimContextIfNeeded 触发。
      *
      * 流程：
      * 1. 将 API 级 ChatMessageDto 转为 UI 级 ChatMessage
      * 2. 调用 generateLlmSummary 生成 LLM 摘要
-     * 3. 重置 ConversationManager 并用压缩后的历史恢复
+     * 3. 重置 ConversationEngine 并用压缩后的历史恢复
      * 4. 更新 UI 状态
      *
-     * 返回 true 表示压缩成功，false 表示失败（ConversationManager 会回退到直接截断）。
+     * 返回 true 表示压缩成功，false 表示失败（ConversationEngine 会回退到直接截断）。
      */
     private suspend fun autoCompactMessages(messages: List<ChatHttpClient.ChatMessageDto>): Boolean {
         if (messages.size <= 6) return false
@@ -708,7 +707,7 @@ class PiAgentManager(
             ChatHttpClient.ChatMessageDto(role = "system", content = summary)
         ) + keptDto
 
-        conversationManager.compactMessages(newMessages)
+        conversationEngine.compactMessages(newMessages)
 
         // 更新 UI 状态
         val keptUi = keptDto.mapNotNull { msg ->
@@ -839,8 +838,8 @@ class PiAgentManager(
     private fun newMessageId(): String = java.util.UUID.randomUUID().toString()
 
     private suspend fun loadMessagesInternal(sessionId: String): List<ChatMessage> {
-        // 新架构：从 ConversationManager 获取当前消息
-        val convMessages = conversationManager.getMessages()
+        // 新架构：从 ConversationEngine 获取当前消息
+        val convMessages = conversationEngine.getMessages()
         if (convMessages.isNotEmpty()) {
             return convMessages.mapNotNull { msg ->
                 when (msg.role) {
@@ -1024,10 +1023,10 @@ class PiAgentManager(
     // ==================== 新架构：配置解析 + 事件映射 ====================
 
     /**
-     * 从 PiConfigManager 解析出 ConversationManager 需要的配置。
+     * 从 PiConfigManager 解析出 ConversationEngine 需要的配置。
      * 读取 API Key、Base URL、Model、System Prompt。
      */
-    private suspend fun resolveConvConfig(sessionId: String, session: AgentSessionRecord): ConversationManager.ConvConfig? {
+    private suspend fun resolveConvConfig(sessionId: String, session: AgentSessionRecord): ConversationConfig? {
         val snapshot = configManager.readSnapshot()
         val userConfig = configManager.readUserConfig()
 
@@ -1089,7 +1088,7 @@ class PiAgentManager(
         // Anthropic API 要求 max_tokens 必填，设置默认值
         val maxTokens = if (providerId == "anthropic") 8192 else null
 
-        return ConversationManager.ConvConfig(
+        return ConversationConfig(
             baseUrl = baseUrl,
             apiKey = apiKey,
             model = model,
@@ -1101,24 +1100,24 @@ class PiAgentManager(
     }
 
     /**
-     * 将 ConvEvent 映射到现有 UI 状态更新。
+     * 将 Engine 事件映射到 UI 状态更新。
      * 复用 pendingTextDelta / pendingThinkingDelta / upsertTool 等现有机制。
      */
-    private fun handleConvEvent(sessionId: String, event: ConversationManager.ConvEvent, promptStartTime: Long) {
+    private fun handleEngineEvent(sessionId: String, event: ConversationEvent, promptStartTime: Long) {
         when (event) {
-            is ConversationManager.ConvEvent.TextDelta -> {
+            is ConversationEvent.TextDelta -> {
                 if (_state.value.firstDeltaAt == 0L) {
                     _state.update { it.copy(firstDeltaAt = System.currentTimeMillis(), processingPhase = "receiving") }
                 }
                 applyAssistantDeltas(textDelta = event.text, thinkingDelta = "")
             }
-            is ConversationManager.ConvEvent.ThinkingDelta -> {
+            is ConversationEvent.ThinkingDelta -> {
                 if (_state.value.firstDeltaAt == 0L) {
                     _state.update { it.copy(firstDeltaAt = System.currentTimeMillis(), processingPhase = "receiving") }
                 }
                 applyAssistantDeltas(textDelta = "", thinkingDelta = event.text)
             }
-            is ConversationManager.ConvEvent.ToolCallStart -> {
+            is ConversationEvent.ToolCallStart -> {
                 finishStreamingFlush()
                 _state.update { it.copy(processingPhase = "executing_tool") }
                 upsertTool(
@@ -1130,7 +1129,7 @@ class PiAgentManager(
                     status = "running"
                 )
             }
-            is ConversationManager.ConvEvent.ToolCallResult -> {
+            is ConversationEvent.ToolCallResult -> {
                 upsertTool(
                     toolCallId = event.toolCallId,
                     name = event.toolName,
@@ -1139,32 +1138,41 @@ class PiAgentManager(
                     resultMeta = null,
                     status = if (event.success) "done" else "error"
                 )
-                // 不在此处设置 processingPhase = "connecting"：并行工具调用时，每个
-                // ToolCallResult 都会触发，但其他工具可能仍在执行，过早设 "connecting"
-                // 会让 UI 显示"正在连接"而实际还在等工具完成。等所有工具结果到达后，
-                // ConversationManager.send() 会发送 PhaseChange("connecting") 事件正确设置此状态。
             }
-            is ConversationManager.ConvEvent.PhaseChange -> {
-                _state.update { it.copy(processingPhase = event.phase) }
+            is ConversationEvent.StateChanged -> {
+                val phase = when (event.to) {
+                    is ConversationState.Connecting -> "connecting"
+                    is ConversationState.Streaming -> "receiving"
+                    is ConversationState.ExecutingTools -> "executing_tool"
+                    is ConversationState.Compacting -> "compacting"
+                    is ConversationState.Retrying -> "connecting"
+                    is ConversationState.Done, is ConversationState.Failed, is ConversationState.Aborted, ConversationState.Idle -> null
+                }
+                _state.update { it.copy(processingPhase = phase) }
             }
-            is ConversationManager.ConvEvent.Error -> {
-                appendSystemError(event.message)
+            is ConversationEvent.Error -> {
+                val message = when (val err = event.error) {
+                    is ConversationError.LlmError -> err.message
+                    is ConversationError.ToolError -> "工具 ${err.toolName} 错误: ${err.message}"
+                    is ConversationError.ContextOverflow -> "上下文溢出: ${err.estimatedTokens}/${err.limit} tokens"
+                    is ConversationError.MaxRoundsExceeded -> "工具调用轮次超过上限 (${err.rounds}/${err.max})"
+                    ConversationError.Aborted -> "对话已中止"
+                }
+                appendSystemError(message)
             }
-            is ConversationManager.ConvEvent.TokenUsageUpdate -> {
+            is ConversationEvent.TokenUsage -> {
                 _state.update { it.copy(
                     activity = "Token 用量 — 输入: ${event.promptTokens} / 输出: ${event.completionTokens} / 总计: ${event.totalTokens}"
                 ) }
             }
-            is ConversationManager.ConvEvent.Retrying -> {
+            is ConversationEvent.Retrying -> {
                 appendMessage(ChatMessage(
                     newMessageId(), "system",
                     "网络重试中 (${event.attempt}/3)：${event.reason}，${event.delayMs / 1000}s 后重试...",
                     System.currentTimeMillis()
                 ))
             }
-            ConversationManager.ConvEvent.TurnEnd -> {
-                // setTurnActive(false) 内部已调用 finishStreamingFlush()，
-                // 这里不需要重复调用（修复前重复 flush 在 IO 线程与 Main 线程竞争）
+            ConversationEvent.TurnComplete -> {
                 setTurnActive(sessionId, false)
                 repo.updateRuntimeStatus(sessionId, "running", null)
                 _state.update { it.copy(processingPhase = null, promptSentAt = 0L, firstDeltaAt = 0L) }
