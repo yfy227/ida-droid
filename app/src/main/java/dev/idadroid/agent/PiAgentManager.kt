@@ -1154,6 +1154,7 @@ class PiAgentManager(
                 val message = when (val err = event.error) {
                     is ConversationError.LlmError -> err.message
                     is ConversationError.ToolError -> "工具 ${err.toolName} 错误: ${err.message}"
+                    is ConversationError.ToolTimeout -> "工具 ${err.toolName} 超时 (${err.timeoutMs / 1000}s)"
                     is ConversationError.ContextOverflow -> "上下文溢出: ${err.estimatedTokens}/${err.limit} tokens"
                     is ConversationError.MaxRoundsExceeded -> "工具调用轮次超过上限 (${err.rounds}/${err.max})"
                     ConversationError.Aborted -> "对话已中止"

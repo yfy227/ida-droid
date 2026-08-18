@@ -45,6 +45,8 @@ sealed interface ConversationEvent {
     data class ToolCallResult(val toolCallId: String, val toolName: String, val result: String, val success: Boolean) : ConversationEvent
     /** Token 用量更新 */
     data class TokenUsage(val promptTokens: Int, val completionTokens: Int, val totalTokens: Int) : ConversationEvent
+    /** 网络重试 */
+    data class Retrying(val attempt: Int, val reason: String, val delayMs: Long) : ConversationEvent
     /** 轮次完成 */
     data object TurnComplete : ConversationEvent
     /** 错误 */

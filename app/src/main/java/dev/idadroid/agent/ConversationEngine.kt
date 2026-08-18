@@ -246,9 +246,9 @@ class ConversationEngine(
                     ConversationState.ExecutingTools(toolNames)), onEvent)
                 _state.value = ConversationState.ExecutingTools(toolNames)
 
-                val executions = toolExecutor.execute(llmResult.toolCalls) { toolCallId, toolName, phase, outcome ->
+                val executions = toolExecutor.execute(llmResult.toolCalls) { toolCallId, toolName, args, phase, outcome ->
                     if (phase == "start") {
-                        emit(ConversationEvent.ToolCallStart(toolCallId, toolName, ""), onEvent)
+                        emit(ConversationEvent.ToolCallStart(toolCallId, toolName, args), onEvent)
                     } else {
                         emit(ConversationEvent.ToolCallResult(
                             toolCallId, toolName, outcome.output, outcome.success), onEvent)
@@ -359,6 +359,7 @@ class ConversationEngine(
                     }
                     is ChatHttpClient.StreamEvent.Retrying -> {
                         _state.value = ConversationState.Retrying(event.attempt, event.reason)
+                        emit(ConversationEvent.Retrying(event.attempt, event.reason, event.delayMs), onEvent)
                         emit(ConversationEvent.StateChanged(
                             ConversationState.Retrying(event.attempt, event.reason)), onEvent)
                     }
@@ -400,7 +401,7 @@ class ConversationEngine(
         }
     }
 
-    private suspend fun emit(event: ConversationEvent, onEvent: (ConversationEvent) -> Unit) {
+    private fun emit(event: ConversationEvent, onEvent: (ConversationEvent) -> Unit) {
         onEvent(event)
         _events.tryEmit(event)
     }

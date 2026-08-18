@@ -219,7 +219,7 @@ data class ChatMessage(
 
 /** DTO → UI 模型转换 */
 fun ChatHttpClient.ChatMessageDto.toUiMessage(): ChatMessage = ChatMessage(
-    id = newMessageId(),
+    id = java.util.UUID.randomUUID().toString(),
     role = role,
     text = content ?: "",
     timestamp = System.currentTimeMillis(),
@@ -228,5 +228,3 @@ fun ChatHttpClient.ChatMessageDto.toUiMessage(): ChatMessage = ChatMessage(
     toolResult = content,
     toolStatus = if (role == "tool") "done" else null
 )
-
-private fun newMessageId(): String = java.util.UUID.randomUUID().toString()

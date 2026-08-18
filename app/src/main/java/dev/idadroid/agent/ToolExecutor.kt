@@ -37,12 +37,12 @@ class ToolExecutor(
      * 每个工具有独立的超时保护。
      *
      * @param toolCalls 工具调用列表
-     * @param onProgress 进度回调（toolCallId, toolName, started/result）
+     * @param onProgress 进度回调（toolCallId, toolName, args, phase, outcome）
      * @return 执行结果列表，与输入一一对应
      */
     suspend fun execute(
         toolCalls: List<ChatHttpClient.ToolCallDto>,
-        onProgress: ((String, String, String, ToolOutcome) -> Unit)? = null
+        onProgress: ((String, String, String, String, ToolOutcome) -> Unit)? = null
     ): List<ToolExecution> {
         if (toolCalls.isEmpty()) return emptyList()
 
@@ -64,9 +64,9 @@ class ToolExecutor(
     /** 执行单个工具调用 */
     private suspend fun executeSingle(
         tc: ChatHttpClient.ToolCallDto,
-        onProgress: ((String, String, String, ToolOutcome) -> Unit)?
+        onProgress: ((String, String, String, String, ToolOutcome) -> Unit)?
     ): ToolExecution {
-        onProgress?.invoke(tc.id, tc.name, "start", ToolOutcome.success(""))
+        onProgress?.invoke(tc.id, tc.name, tc.arguments, "start", ToolOutcome.success(""))
         val start = System.currentTimeMillis()
         val outcome = try {
             withTimeoutOrNull(defaultTimeoutMs) {
@@ -78,7 +78,7 @@ class ToolExecutor(
             ToolOutcome.error("工具执行错误: ${e.message ?: e::class.simpleName ?: "未知错误"}")
         }
         val duration = System.currentTimeMillis() - start
-        onProgress?.invoke(tc.id, tc.name, "result", outcome)
+        onProgress?.invoke(tc.id, tc.name, tc.arguments, "result", outcome)
         return ToolExecution(tc, outcome, duration)
     }
 }
