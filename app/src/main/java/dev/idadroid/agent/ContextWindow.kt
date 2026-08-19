@@ -72,7 +72,10 @@ class ContextWindow(
         val callback = compactor
         if (callback != null) {
             val snapshot = messages.toList()
-            val summary = try { callback(snapshot) } catch (_: Exception) { null }
+            val summary = try { callback(snapshot) } catch (e: Exception) {
+                android.util.Log.w("ContextWindow", "compactor 调用失败: ${e.message}")
+                null
+            }
             if (summary != null) {
                 val keepCount = maxOf(4, messages.size / 3)
                 val kept = messages.takeLast(keepCount)

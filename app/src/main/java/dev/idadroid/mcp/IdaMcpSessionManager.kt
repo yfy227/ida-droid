@@ -18,6 +18,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
@@ -75,8 +76,11 @@ class IdaMcpSessionManager(
                 ?: error("IDA MCP 未运行，请先启动 IDA MCP HTTP 服务")
             val entry = when {
                 !hostPath.isNullOrBlank() -> fileTransferManager.transferHostPath(hostPath)
-                else -> fileTransferManager.findAndTransferByName(name!!)
-                    ?: error("主机端未找到文件：$name")
+                else -> {
+                    val n = name ?: error("文件名为空")
+                    fileTransferManager.findAndTransferByName(n)
+                        ?: error("主机端未找到文件：$n")
+                }
             }
             IdaMcpClient(endpoint).openFile(entry.prootPath)
         }.let { result ->
@@ -98,7 +102,7 @@ class IdaMcpSessionManager(
     val state: StateFlow<IdaMcpSessionState> = _state.asStateFlow()
 
     fun updateSettings(settings: IdaMcpLaunchSettings) {
-        _state.value = _state.value.copy(settings = settings.sanitized())
+        _state.update { it.copy(settings = settings.sanitized()) }
     }
 
     /** Build launch settings from the central IdaDroidSettings store (if available). */
@@ -117,7 +121,7 @@ class IdaMcpSessionManager(
     /** Refresh state from settings — call after the user changes MCP settings. */
     fun refreshFromSettings() {
         val refreshed = currentLaunchSettings()
-        _state.value = _state.value.copy(settings = refreshed.sanitized())
+        _state.update { it.copy(settings = refreshed.sanitized()) }
         monitoringEnabled = settingsStore?.mcpSettings?.value?.autoRestart ?: true
     }
 
@@ -130,7 +134,7 @@ class IdaMcpSessionManager(
                 if (it.status == IdaMcpStatus.Starting || it.status == IdaMcpStatus.Running) it
                 else it.copy(status = IdaMcpStatus.Starting, message = "IDA MCP 正在启动，请稍候…", settings = launchSettings)
             }
-            _state.value = current
+            _state.update { current }
             return Result.failure(IllegalStateException("IDA MCP 正在启动或停止，请稍候…"))
         }
         try {
@@ -147,17 +151,17 @@ class IdaMcpSessionManager(
 
                     if (isTcpOpen(launchSettings.port)) {
                         val running = runningState(launchSettings, "IDA MCP HTTP 已在端口 ${launchSettings.port} 运行")
-                        _state.value = running
+                        _state.update { running }
                         return@runCatching running
                     }
 
-                    _state.value = IdaMcpSessionState(
+                    _state.update { IdaMcpSessionState(
                         status = IdaMcpStatus.Starting,
                         settings = launchSettings,
                         endpoint = launchSettings.endpoint,
                         message = "正在启动 IDA MCP HTTP…",
                         startedAt = System.currentTimeMillis()
-                    )
+                    ) }
 
                     activeProcess?.takeIf { it.isAlive }?.destroy()
                     val spec = runtime.workspaceCommandSpec(buildStartCommand(launchSettings))
@@ -179,12 +183,12 @@ class IdaMcpSessionManager(
                             message = "IDA MCP 端口 ${launchSettings.port} 在 30 秒内未就绪\n$logTail",
                             startedAt = System.currentTimeMillis()
                         )
-                        _state.value = errorState
+                        _state.update { errorState }
                         throw IllegalStateException(errorState.message)
                     }
 
                     val running = runningState(launchSettings, "IDA MCP HTTP 已启动：${launchSettings.endpoint}")
-                    _state.value = running
+                    _state.update { running }
                     // Start the file-transfer HTTP bridge so the agent inside the
                     // container can discover and open host-transferred files.
                     runCatching { fileTransferServer.start() }
@@ -196,10 +200,10 @@ class IdaMcpSessionManager(
                     running
                 }.onFailure { error ->
                     if (_state.value.status == IdaMcpStatus.Starting) {
-                        _state.value = _state.value.copy(
+                        _state.update { it.copy(
                             status = IdaMcpStatus.Error,
                             message = "启动 IDA MCP 失败：${error.message}"
-                        )
+                        ) }
                     }
                 }
             }
@@ -228,12 +232,12 @@ class IdaMcpSessionManager(
                     if (result.exitCode != 0 && !result.timedOut) {
                         throw IllegalStateException(result.stderr.ifBlank { result.stdout }.ifBlank { "停止命令失败" })
                     }
-                    _state.value = IdaMcpSessionState(
+                    _state.update { IdaMcpSessionState(
                         status = IdaMcpStatus.Stopped,
                         settings = settings,
                         endpoint = settings.endpoint,
                         message = "已停止 IDA MCP HTTP"
-                    )
+                    ) }
                 }
             }
         } finally {
@@ -265,7 +269,7 @@ class IdaMcpSessionManager(
                 message = "未启动"
             )
         }
-        _state.value = probed
+        _state.update { probed }
         probed
     }
 
@@ -392,10 +396,10 @@ class IdaMcpSessionManager(
         lastHealthOk = ok
         lastHealthCheckAt = System.currentTimeMillis()
         if (!ok && _state.value.status == IdaMcpStatus.Running) {
-            _state.value = _state.value.copy(
+            _state.update { it.copy(
                 status = IdaMcpStatus.Error,
                 message = "健康检查失败：进程${if (alive) "存活" else "已退出"}，端口${if (portOpen) "开放" else "无响应"}"
-            )
+            ) }
         }
         ok
     }
@@ -419,10 +423,10 @@ class IdaMcpSessionManager(
                         if (_state.value.status == IdaMcpStatus.Running && monitoringEnabled) {
                             val count = autoRestartCount.incrementAndGet()
                             Log.w("IdaMcpSessionManager", "Watchdog detected failure (alive=$alive, port=$portOpen), auto-restart #$count")
-                            _state.value = _state.value.copy(
+                            _state.update { it.copy(
                                 status = IdaMcpStatus.Starting,
                                 message = "监控检测到服务中断，正在自动重启…（第 $count 次）"
-                            )
+                            ) }
                             runCatching { start(settings) }
                                 .onFailure { Log.e("IdaMcpSessionManager", "Auto-restart failed", it) }
                         }

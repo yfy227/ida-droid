@@ -187,7 +187,10 @@ abstract class AbstractAgentTool : AgentTool {
      */
     protected fun parseArgs(argsJson: String): JsonObject? = try {
         json.parseToJsonElement(argsJson).jsonObject
-    } catch (_: Exception) { null }
+    } catch (e: Exception) {
+        android.util.Log.w("ToolRegistry", "参数解析失败: ${e.message}")
+        null
+    }
 
     /** 获取字符串参数，缺失时返回 null */
     protected fun JsonObject.getString(key: String): String? =

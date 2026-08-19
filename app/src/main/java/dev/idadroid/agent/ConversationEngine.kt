@@ -10,6 +10,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -118,7 +119,7 @@ class ConversationEngine(
         contextWindow = null
         currentConfig = null
         resetTokenUsage()
-        _state.value = ConversationState.Idle
+        _state.update { ConversationState.Idle }
     }
 
     /** 从已有消息历史恢复对话 */
@@ -127,7 +128,7 @@ class ConversationEngine(
         cw.addAll(messages)
         contextWindow = cw
         currentConfig = config
-        _state.value = ConversationState.Idle
+        _state.update { ConversationState.Idle }
     }
 
     /**
@@ -159,7 +160,7 @@ class ConversationEngine(
 
         // 重置状态
         resetTokenUsage()
-        _state.value = ConversationState.Idle
+        _state.update { ConversationState.Idle }
 
         // 追加用户消息
         cw.add(ChatHttpClient.ChatMessageDto(
@@ -204,7 +205,7 @@ class ConversationEngine(
 
                 // 2. LLM 调用
                 emit(ConversationEvent.StateChanged(ConversationState.Connecting), onEvent)
-                _state.value = ConversationState.Connecting
+                _state.update { ConversationState.Connecting }
 
                 val llmResult = streamLlmRound(client, cw, tools, config, onEvent)
 
@@ -219,7 +220,7 @@ class ConversationEngine(
                         ))
                     }
                     emit(ConversationEvent.Error(llmResult.error), onEvent)
-                    _state.value = ConversationState.Failed(llmResult.error)
+                    _state.update { ConversationState.Failed(llmResult.error) }
                     emit(ConversationEvent.TurnComplete, onEvent)
                     return
                 }
@@ -233,7 +234,7 @@ class ConversationEngine(
 
                 // 5. 如果没有工具调用 → 完成
                 if (llmResult.toolCalls.isEmpty()) {
-                    _state.value = ConversationState.Done
+                    _state.update { ConversationState.Done }
                     emit(ConversationEvent.TurnComplete, onEvent)
                     return
                 }
@@ -242,7 +243,7 @@ class ConversationEngine(
                 val toolNames = llmResult.toolCalls.map { it.name }
                 emit(ConversationEvent.StateChanged(
                     ConversationState.ExecutingTools(toolNames)), onEvent)
-                _state.value = ConversationState.ExecutingTools(toolNames)
+                _state.update { ConversationState.ExecutingTools(toolNames) }
 
                 val executions = toolExecutor.execute(llmResult.toolCalls) { toolCallId, toolName, args, phase, outcome ->
                     if (phase == "start") {
@@ -270,11 +271,11 @@ class ConversationEngine(
             // 超过 maxToolRounds
             val error = ConversationError.MaxRoundsExceeded(round, config.maxToolRounds)
             emit(ConversationEvent.Error(error), onEvent)
-            _state.value = ConversationState.Failed(error)
+            _state.update { ConversationState.Failed(error) }
             emit(ConversationEvent.TurnComplete, onEvent)
 
         } catch (e: CancellationException) {
-            _state.value = ConversationState.Aborted
+            _state.update { ConversationState.Aborted }
             emit(ConversationEvent.TurnComplete, onEvent)
             // 不 re-throw — send() 正常返回，状态已设置为 Aborted
         } catch (e: Exception) {
@@ -283,7 +284,7 @@ class ConversationEngine(
                 retriable = false
             )
             emit(ConversationEvent.Error(error), onEvent)
-            _state.value = ConversationState.Failed(error)
+            _state.update { ConversationState.Failed(error) }
             emit(ConversationEvent.TurnComplete, onEvent)
         }
     }
@@ -321,7 +322,7 @@ class ConversationEngine(
                     is ChatHttpClient.StreamEvent.TextDelta -> {
                         if (firstDelta) {
                             firstDelta = false
-                            _state.value = ConversationState.Streaming
+                            _state.update { ConversationState.Streaming }
                             emit(ConversationEvent.StateChanged(ConversationState.Streaming), onEvent)
                         }
                         textBuffer.append(event.text)
@@ -330,7 +331,7 @@ class ConversationEngine(
                     is ChatHttpClient.StreamEvent.ThinkingDelta -> {
                         if (firstDelta) {
                             firstDelta = false
-                            _state.value = ConversationState.Streaming
+                            _state.update { ConversationState.Streaming }
                             emit(ConversationEvent.StateChanged(ConversationState.Streaming), onEvent)
                         }
                         thinkingBuffer.append(event.text)
@@ -356,7 +357,7 @@ class ConversationEngine(
                         error = ConversationError.LlmError(event.message, retriable = true)
                     }
                     is ChatHttpClient.StreamEvent.Retrying -> {
-                        _state.value = ConversationState.Retrying(event.attempt, event.reason)
+                        _state.update { ConversationState.Retrying(event.attempt, event.reason) }
                         emit(ConversationEvent.Retrying(event.attempt, event.reason, event.delayMs), onEvent)
                         emit(ConversationEvent.StateChanged(
                             ConversationState.Retrying(event.attempt, event.reason)), onEvent)

@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.withContext
@@ -26,7 +27,7 @@ class EnvironmentManager(context: Context) {
     val state: StateFlow<EnvironmentState> = _state.asStateFlow()
 
     fun refresh() {
-        _state.value = loadState()
+        _state.update { loadState() }
     }
 
     fun importRootfs(uri: Uri): Flow<ImportProgress> = importer.importFromUri(uri)

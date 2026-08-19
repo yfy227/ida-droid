@@ -770,7 +770,10 @@ private fun parseGeminiModels(body: String): List<String> = try {
 private fun parseError(body: String): String? = try {
     val obj = Json.parseToJsonElement(body) as? JsonObject
     obj?.get("error")?.let { (it as? JsonObject)?.get("message")?.jsonPrimitive?.contentOrNull } ?: obj?.get("message")?.jsonPrimitive?.contentOrNull
-} catch (_: Exception) { null }
+} catch (e: Exception) {
+    android.util.Log.w("AiConfigEditor", "parseError 失败: ${e.message}")
+    null
+}
 
 // ─── Model fetching ────────────────────────────────────────────────────────────
 
@@ -843,4 +846,7 @@ private fun parseImportedConfig(json: String): PiConfigSnapshot? = try {
         appendSystem = export.appendSystem, extraArgsText = export.extraArgsText,
         modelCatalog = parseAgentModelCatalog(export.modelsText.ifBlank { "{}" })
     )
-} catch (_: Exception) { null }
+} catch (e: Exception) {
+    android.util.Log.w("AiConfigEditor", "导入配置解析失败: ${e.message}")
+    null
+}

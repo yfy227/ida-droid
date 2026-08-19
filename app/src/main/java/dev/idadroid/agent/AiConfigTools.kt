@@ -262,7 +262,10 @@ class AiConfigTools(
         val parsed = JsonFormats.pretty.parseToJsonElement(body).jsonObject
         parsed["error"]?.jsonObject?.get("message")?.jsonPrimitive?.contentOrNull
             ?: parsed["message"]?.jsonPrimitive?.contentOrNull
-    } catch (_: Exception) { null }
+    } catch (e: Exception) {
+        android.util.Log.w("AiConfigTools", "错误消息解析失败: ${e.message}")
+        null
+    }
 }
 
 data class TestResult(

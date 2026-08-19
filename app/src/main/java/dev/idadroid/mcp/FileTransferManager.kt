@@ -3,6 +3,7 @@ package dev.idadroid.mcp
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import kotlinx.coroutines.CancellationException
 import dev.idadroid.env.EnvironmentPaths
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -194,7 +195,7 @@ class FileTransferManager(
             if (exact.isFile) {
                 return@withContext runCatching { transferHostPath(exact.absolutePath) }.let { result ->
                     if (result.exceptionOrNull() is kotlinx.coroutines.CancellationException) {
-                        throw result.exceptionOrNull()!!
+                        throw result.exceptionOrNull() ?: CancellationException()
                     }
                     result.getOrNull()
                 }
@@ -204,7 +205,7 @@ class FileTransferManager(
             if (found != null) {
                 return@withContext runCatching { transferHostPath(found.absolutePath) }.let { result ->
                     if (result.exceptionOrNull() is kotlinx.coroutines.CancellationException) {
-                        throw result.exceptionOrNull()!!
+                        throw result.exceptionOrNull() ?: CancellationException()
                     }
                     result.getOrNull()
                 }

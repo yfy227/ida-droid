@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
@@ -56,18 +57,18 @@ class VncSessionManager(
 
                 if (isTcpOpen(settings.port)) {
                     val running = runningState(settings, "VNC 已在端口 ${settings.port} 运行")
-                    _state.value = running
+                    _state.update { running }
                     return@runCatchingSuspending running
                 }
 
-                _state.value = GuiSessionState(
+                _state.update { GuiSessionState(
                     status = GuiStatus.Starting,
                     port = settings.port,
                     display = settings.display,
                     pid = null,
                     message = "正在启动 IDA GUI/VNC...",
                     startedAt = System.currentTimeMillis()
-                )
+                ) }
 
                 activeProcess?.takeIf { it.isAlive }?.destroy()
                 val command = buildStartCommand(settings)
@@ -90,12 +91,12 @@ class VncSessionManager(
                         message = "VNC 端口 ${settings.port} 在 45 秒内未就绪\n$logTail",
                         startedAt = System.currentTimeMillis()
                     )
-                    _state.value = errorState
+                    _state.update { errorState }
                     throw IllegalStateException(errorState.message)
                 }
 
                 val running = runningState(settings, "IDA GUI/VNC 已启动：127.0.0.1:${settings.port}")
-                _state.value = running
+                _state.update { running }
                 running
             }
         }
@@ -104,7 +105,7 @@ class VncSessionManager(
             if (openViewer) {
                 connectViewer().onFailure { error ->
                     val updated = state.copy(message = "${state.message}\nVNC 已启动，但打开 viewer 失败：${error.message}")
-                    _state.value = updated
+                    _state.update { updated }
                     return Result.success(updated)
                 }
             }
@@ -133,12 +134,12 @@ class VncSessionManager(
             if (result.exitCode != 0 && !result.timedOut) {
                 throw IllegalStateException("停止 GUI 失败：${result.stderr.ifBlank { result.stdout }}")
             }
-                    _state.value = GuiSessionState(
+                    _state.update { GuiSessionState(
                         status = GuiStatus.Stopped,
                         port = settings.port,
                         display = settings.display,
                         message = "已停止 IDA GUI/VNC"
-                    )
+                    ) }
                 }
             }
         } finally {
@@ -189,7 +190,7 @@ class VncSessionManager(
             )
             else -> GuiSessionState(status = GuiStatus.Stopped, port = settings.port, display = settings.display, message = "未启动")
         }
-        _state.value = probed
+        _state.update { probed }
         probed
     }
 

@@ -232,7 +232,10 @@ class FileTransferHttpServer(
                 val transferResult = runCatching {
                     when {
                         !hostPath.isNullOrBlank() -> manager.transferHostPath(hostPath)
-                        else -> manager.findAndTransferByName(name!!)
+                        else -> {
+                            val n = name ?: error("文件名为空")
+                            manager.findAndTransferByName(n)
+                        }
                     }
                 }
                 // runCatching 会吞 CancellationException，重新抛出以保留取消信号
