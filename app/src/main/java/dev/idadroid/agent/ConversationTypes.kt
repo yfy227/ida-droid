@@ -1,8 +1,5 @@
 package dev.idadroid.agent
 
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.StateFlow
-
 // ══════════════════════════════════════════════════════════════
 // 状态机 — 显式状态，替代字符串 phase
 // ══════════════════════════════════════════════════════════════

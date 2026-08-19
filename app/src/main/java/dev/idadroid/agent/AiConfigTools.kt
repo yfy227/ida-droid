@@ -243,7 +243,8 @@ class AiConfigTools(
                     } ?: emptyList()
                 }
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            android.util.Log.w("AiConfigTools", "fetchModelList 失败: ${e.message}")
             emptyList()
         }
     }

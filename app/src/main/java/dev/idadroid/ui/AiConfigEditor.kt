@@ -760,12 +760,18 @@ private fun readBody(conn: java.net.HttpURLConnection, code: Int): String =
 private fun parseModels(body: String): List<String> = try {
     val obj = Json.parseToJsonElement(body) as? JsonObject ?: return emptyList()
     (obj["data"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull }?.filter { it.isNotBlank() } ?: emptyList()
-} catch (_: Exception) { emptyList() }
+} catch (e: Exception) {
+    android.util.Log.w("AiConfigEditor", "parseModels 失败: ${e.message}")
+    emptyList()
+}
 
 private fun parseGeminiModels(body: String): List<String> = try {
     val obj = Json.parseToJsonElement(body) as? JsonObject ?: return emptyList()
     (obj["models"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.get("name")?.jsonPrimitive?.contentOrNull?.removePrefix("models/") }?.filter { it.isNotBlank() } ?: emptyList()
-} catch (_: Exception) { emptyList() }
+} catch (e: Exception) {
+    android.util.Log.w("AiConfigEditor", "parseGeminiModels 失败: ${e.message}")
+    emptyList()
+}
 
 private fun parseError(body: String): String? = try {
     val obj = Json.parseToJsonElement(body) as? JsonObject
@@ -783,7 +789,10 @@ private fun fetchAvailableModels(provider: ProviderConfig): List<String> = try {
         "anthropic" -> fetchAnthropic(provider)
         else -> fetchOpenAi(provider)
     }
-} catch (_: Exception) { emptyList() }
+} catch (e: Exception) {
+    android.util.Log.w("AiConfigEditor", "fetchAvailableModels 失败: ${e.message}")
+    emptyList()
+}
 
 private fun fetchOpenAi(provider: ProviderConfig): List<String> {
     val base = provider.baseUrl.trim().removeSuffix("/")
