@@ -228,3 +228,6 @@ fun ChatHttpClient.ChatMessageDto.toUiMessage(): ChatMessage = ChatMessage(
     toolResult = content,
     toolStatus = if (role == "tool") "done" else null
 )
+
+/** 批量 DTO → UI 转换 */
+fun List<ChatHttpClient.ChatMessageDto>.toUiMessages(): List<ChatMessage> = mapNotNull { it.toUiMessage() }

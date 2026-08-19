@@ -689,13 +689,7 @@ class PiAgentManager(
         val keptDto = messages.takeLast(keepCount)
 
         // 转为 UI 级 ChatMessage 用于 generateLlmSummary
-        val toSummarizeUi = toSummarizeDto.mapNotNull { msg ->
-            when (msg.role) {
-                "user" -> ChatMessage(newMessageId(), "user", msg.content ?: "", System.currentTimeMillis())
-                "assistant" -> ChatMessage(newMessageId(), "assistant", msg.content ?: "", System.currentTimeMillis())
-                else -> null
-            }
-        }
+        val toSummarizeUi = toSummarizeDto.toUiMessages().filter { it.role == "user" || it.role == "assistant" }
         if (toSummarizeUi.isEmpty()) return false
 
         // 生成摘要
@@ -710,16 +704,7 @@ class PiAgentManager(
         conversationEngine.compactMessages(newMessages)
 
         // 更新 UI 状态
-        val keptUi = keptDto.mapNotNull { msg ->
-            when (msg.role) {
-                "user" -> ChatMessage(newMessageId(), "user", msg.content ?: "", System.currentTimeMillis())
-                "assistant" -> ChatMessage(newMessageId(), "assistant", msg.content ?: "", System.currentTimeMillis())
-                "tool" -> ChatMessage(newMessageId(), "tool", msg.content ?: "", System.currentTimeMillis(),
-                    toolCallId = msg.toolCallId, toolName = msg.name, toolResult = msg.content, toolStatus = "done")
-                "system" -> ChatMessage(newMessageId(), "system", msg.content ?: "", System.currentTimeMillis())
-                else -> null
-            }
-        }
+        val keptUi = keptDto.toUiMessages()
 
         _state.update { it.copy(messages = listOf(
             ChatMessage(newMessageId(), "system", summary, System.currentTimeMillis())
@@ -841,17 +826,7 @@ class PiAgentManager(
         // 新架构：从 ConversationEngine 获取当前消息
         val convMessages = conversationEngine.getMessages()
         if (convMessages.isNotEmpty()) {
-            return convMessages.mapNotNull { msg ->
-                when (msg.role) {
-                    "user" -> ChatMessage(newMessageId(), "user", msg.content ?: "", System.currentTimeMillis())
-                    "assistant" -> ChatMessage(newMessageId(), "assistant", msg.content ?: "", System.currentTimeMillis())
-                    "tool" -> ChatMessage(newMessageId(), "tool", msg.content ?: "", System.currentTimeMillis(),
-                        toolCallId = msg.toolCallId, toolName = msg.name, toolResult = msg.content, toolStatus = "done"
-                    )
-                    "system" -> ChatMessage(newMessageId(), "system", msg.content ?: "", System.currentTimeMillis())
-                    else -> null
-                }
-            }
+            return convMessages.toUiMessages()
         }
         // 回退：从 session file 读取（旧数据兼容）
         val session = repo.listSessions().firstOrNull { it.id == sessionId } ?: return emptyList()

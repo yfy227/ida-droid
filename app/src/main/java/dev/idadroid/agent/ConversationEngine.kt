@@ -195,9 +195,7 @@ class ConversationEngine(
                 // 检查 abort
                 if (_state.value is ConversationState.Aborted) return
 
-                // 1. 上下文管理
-                emit(ConversationEvent.StateChanged(ConversationState.Compacting), onEvent)
-                _state.value = ConversationState.Compacting
+                // 1. 上下文管理 — 只在实际压缩时发射状态
                 val trimResult = cw.trimIfNeeded()
                 if (trimResult is TrimResult.Compacted) {
                     android.util.Log.i("ConversationEngine",
