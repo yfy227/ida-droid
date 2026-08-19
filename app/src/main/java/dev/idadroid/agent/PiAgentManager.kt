@@ -9,8 +9,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -70,32 +68,16 @@ class PiAgentManager(
     }
     @Volatile private var currentSendJob: Job? = null
 
-    // ==================== 流式 delta 合并器 ====================
-    // 高频 text_delta / thinking_delta 事件会以每秒数十~数百次的频率到达，
-    // 若每次都立即 _state.update + 整条消息列表拷贝 + 触发 Compose 重组，
-    // 会导致主线程被疯狂打帧、Markdown 反复全量重解析（O(n^2)），表现为
-    // 回复"粘成一坨"地攒着一起蹦出来。这里把 delta 先累积到缓冲区，再按
-    // 固定节拍（约 30fps）合并 flush，既保证逐字流式的视觉流畅，又把状态
-    // 更新与重组次数压到可控范围。
-    //
-    // 线程安全说明：ConversationEngine 的并行工具执行（executeToolCallsParallel）
-    // 会从多个 IO 线程同时调用 onEvent 回调，导致 handleConvEvent →
-    // finishStreamingFlush / applyAssistantDeltas 从 IO 线程进入。
-    // StringBuilder 不是线程安全的，deltaFlushJob / deltaStreaming 也不是 volatile，
-    // 若不加锁，IO 线程的 finishStreamingFlush 与 Main 线程的 deltaFlushJob
-    // 会竞争同一批缓冲区，导致丢字或 StringBuilder 内部状态损坏。
-    // 用 streamFlushLock 保护所有对这四个字段的访问。
-    private val streamFlushLock = Any()
-    private val pendingTextDelta = StringBuilder()
-    private val pendingThinkingDelta = StringBuilder()
-    @Volatile private var deltaFlushJob: Job? = null
-    @Volatile private var deltaStreaming = false
     private val _state = MutableStateFlow(AgentUiState(activity = "agent 未启动"))
     val state: StateFlow<AgentUiState> = _state.asStateFlow()
 
+    // ==================== 流式 delta 合并器 ====================
+    // 提取为 DeltaFlusher 独立类 — 高频 delta 节拍 flush，避免主线程卡帧
+    private val deltaFlusher = DeltaFlusher(_state, scope) { newMessageId() }
+
     fun refresh(createDefaultIfReady: Boolean = false) {
         if (!paths.rootfsDir.isDirectory) {
-            _state.value = AgentUiState(activity = "rootfs 未导入")
+            _state.update { AgentUiState(activity = "rootfs 未导入") }
             return
         }
         // 文件 IO 切到 IO 线程，避免主线程阻塞
@@ -890,75 +872,12 @@ class PiAgentManager(
     }
 
     private fun applyAssistantDeltas(textDelta: String, thinkingDelta: String) {
-        if (textDelta.isEmpty() && thinkingDelta.isEmpty()) return
-        // 累积到缓冲区，避免每个 delta 都触发一次整列表拷贝 + 全屏重组。
-        // 用 synchronized 保护：并行工具场景下 handleConvEvent 从 IO 线程调用，
-        // 与 Main 线程的 deltaFlushJob 可能同时操作缓冲区。
-        synchronized(streamFlushLock) {
-            if (textDelta.isNotEmpty()) pendingTextDelta.append(textDelta)
-            if (thinkingDelta.isNotEmpty()) pendingThinkingDelta.append(thinkingDelta)
-            // 本轮第一个 delta：立即 flush 一次，让流式游标与首字瞬间出现，
-            // 随后启动节拍 flusher（约 30fps）持续合并后续 delta。
-            if (!deltaStreaming) {
-                deltaStreaming = true
-                flushPendingDeltasLocked()
-                deltaFlushJob?.cancel()
-                deltaFlushJob = scope.launch(Dispatchers.Main.immediate) {
-                    while (isActive) {
-                        delay(STREAM_FLUSH_INTERVAL_MS)
-                        flushPendingDeltas()
-                    }
-                }
-            }
-        }
+        deltaFlusher.apply(textDelta, thinkingDelta)
     }
 
-    /** 把缓冲区里累积的 delta 一次性合并进状态（一次 _state.update）。 */
-    private fun flushPendingDeltas() {
-        synchronized(streamFlushLock) {
-            flushPendingDeltasLocked()
-        }
-    }
-
-    /** flushPendingDeltas 的内部实现，调用者必须已持有 streamFlushLock。 */
-    private fun flushPendingDeltasLocked() {
-        if (pendingTextDelta.isEmpty() && pendingThinkingDelta.isEmpty()) return
-        val textDelta = pendingTextDelta.toString()
-        val thinkingDelta = pendingThinkingDelta.toString()
-        pendingTextDelta.setLength(0)
-        pendingThinkingDelta.setLength(0)
-        try {
-            _state.update { old ->
-                val messages = old.messages
-                val last = messages.lastOrNull()
-                if (last?.role == "assistant") {
-                    val updatedLast = last.copy(
-                        text = last.text + textDelta,
-                        thinking = if (thinkingDelta.isNotEmpty()) (last.thinking ?: "") + thinkingDelta else last.thinking
-                    )
-                    val list = messages.toMutableList()
-                    list[list.lastIndex] = updatedLast
-                    old.copy(messages = list)
-                } else {
-                    old.copy(messages = messages + ChatMessage(newMessageId(), "assistant", textDelta, System.currentTimeMillis(), thinking = thinkingDelta.takeIf { it.isNotEmpty() }))
-                }
-            }
-        } catch (e: Exception) {
-            // _state.update 的 CAS 循环通常不会抛异常，
-            // 但 lambda 内部的 toMutableList/lastIndex 赋值在极端情况（如空列表）可能越界。
-            // 吞掉异常防止 flusher 崩溃导致流式输出卡死。
-            android.util.Log.w("PiAgentManager", "delta flush 异常: ${e.message}")
-        }
-    }
-
-    /** 结束本轮流式：停止节拍 flusher，并把残余 delta 强制 flush 干净，确保不丢字。 */
+    /** 结束本轮流式：强制 flush 残余 delta */
     private fun finishStreamingFlush() {
-        synchronized(streamFlushLock) {
-            deltaFlushJob?.cancel()
-            deltaFlushJob = null
-            flushPendingDeltasLocked()
-            deltaStreaming = false
-        }
+        deltaFlusher.finish()
     }
 
     /**
@@ -1076,7 +995,7 @@ class PiAgentManager(
 
     /**
      * 将 Engine 事件映射到 UI 状态更新。
-     * 复用 pendingTextDelta / pendingThinkingDelta / upsertTool 等现有机制。
+     * 复用 DeltaFlusher / upsertTool 等现有机制。
      */
     private fun handleEngineEvent(sessionId: String, event: ConversationEvent, promptStartTime: Long) {
         when (event) {
