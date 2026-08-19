@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import dev.idadroid.util.runCatchingSuspend
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -390,7 +391,7 @@ class PiAgentManager(
     /** 将工作区中的文件导入到 pi_workspace 容器内，供 Agent 使用。 */
     fun importWorkspaceFileToContainer(entry: WorkspaceFileEntry, onResult: (Boolean, String) -> Unit = { _, _ -> }) {
         scope.launch {
-            runCatching {
+            runCatchingSuspend {
                 withContext(Dispatchers.IO) { workspaceManager.importToContainer(entry) }
             }.onSuccess { prootPath ->
                 val path = prootPath ?: "未知路径"
@@ -406,7 +407,7 @@ class PiAgentManager(
     /** 将 pi_workspace 容器内的文件导出到工作区。 */
     fun exportFileToWorkspace(containerRelativePath: String, onResult: (Boolean, String) -> Unit = { _, _ -> }) {
         scope.launch {
-            runCatching {
+            runCatchingSuspend {
                 withContext(Dispatchers.IO) { workspaceManager.exportFromContainer(containerRelativePath) }
             }.onSuccess { name ->
                 val fileName = name ?: containerRelativePath.substringAfterLast('/').ifBlank { containerRelativePath }
@@ -422,7 +423,7 @@ class PiAgentManager(
 
     /** 读取工作区文件作为草稿附件（用于发送给 Agent）。 */
     suspend fun readWorkspaceFileAsAttachment(entry: WorkspaceFileEntry): DraftAttachment? {
-        return runCatching {
+        return runCatchingSuspend {
             withContext(Dispatchers.IO) { workspaceManager.readAsDraftAttachment(entry) }
         }.onFailure { error ->
             setError("读取工作区文件失败：${error.message}")
@@ -444,7 +445,7 @@ class PiAgentManager(
         val safeName = safeFileName(fileName).ifBlank { "reply.txt" }
         val finalName = if (safeName.contains('.')) safeName else "$safeName.txt"
         scope.launch {
-            runCatching {
+            runCatchingSuspend {
                 withContext(Dispatchers.IO) { workspaceManager.writeFileText(finalName, content) }
             }.onSuccess { ok ->
                 if (ok) {
@@ -464,7 +465,7 @@ class PiAgentManager(
 
     /** 将工作区文件内容作为文本引用插入到输入框。 */
     suspend fun readWorkspaceFileAsText(entry: WorkspaceFileEntry): String? {
-        return runCatching {
+        return runCatchingSuspend {
             withContext(Dispatchers.IO) { workspaceManager.readAsText(entry) }
         }.onFailure { error ->
             setError("读取工作区文件失败：${error.message}")
@@ -700,7 +701,7 @@ class PiAgentManager(
 
     fun savePiConfig(snapshot: PiConfigSnapshot) {
         scope.launch {
-            runCatching { withContext(Dispatchers.IO) { configManager.saveSnapshot(snapshot) } }
+            runCatchingSuspend { withContext(Dispatchers.IO) { configManager.saveSnapshot(snapshot) } }
                 .onSuccess { _state.update { it.copy(piConfig = configManager.readSnapshot(), activity = "Pi 配置已保存；重启 session 后生效") } }
                 .onFailure { error -> setError("保存 Pi 配置失败：${error.message}") }
         }
