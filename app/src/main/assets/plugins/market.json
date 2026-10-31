@@ -1,0 +1,94 @@
+[
+  {
+    "id": "apk-toolkit",
+    "name": "APK 体检工具箱",
+    "version": "1.0.0",
+    "description": "APK 快速体检: 组件清单、签名信息、dex 结构、可疑权限一键汇总。适合拿到样本后先跑一遍体检再交给 IDA 深挖。",
+    "author": "IDAdroid 内置",
+    "tools": [
+      {
+        "name": "apk_overview",
+        "description": "APK 宏观体检: 大小/条目数/dex 数/so 列表/证书概要。输入 APK 的容器内路径。",
+        "command": "echo '=== APK 概览 ==='; ls -lh '{{path}}'; echo; unzip -l '{{path}}' | head -40; echo; echo '=== dex/so ==='; unzip -l '{{path}}' | grep -E '\\.(dex|so)$' | head -20; echo; echo '=== 签名 ==='; unzip -l '{{path}}' | grep -iE 'meta-inf/.*\\.(rsa|dsa|ec)$'; keytool -printcert -jarfile '{{path}}' 2>/dev/null | head -20",
+        "timeoutSec": 120,
+        "params": [
+          { "name": "path", "description": "APK 容器内路径(如 /root/.mcp-transfer/app.apk)", "required": true }
+        ]
+      },
+      {
+        "name": "apk_manifest",
+        "description": "提取 APK AndroidManifest 关键信息(权限/组件/exported)。依赖 apktool 或 aapt。",
+        "command": "(aapt dump badging '{{path}}' 2>/dev/null || apktool d -f -o /tmp/apk_m '{{path}}' >/dev/null 2>&1 && cat /tmp/apk_m/AndroidManifest.xml) | head -80",
+        "timeoutSec": 180,
+        "params": [
+          { "name": "path", "description": "APK 容器内路径", "required": true }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "native-analyze",
+    "name": "原生分析三板斧",
+    "version": "1.0.0",
+    "description": "ELF/SO 一键分析: readelf 头+段+动态符号、可疑字符串、JNI 导出表。给 IDA 分析前建立全局认知。",
+    "author": "IDAdroid 内置",
+    "tools": [
+      {
+        "name": "elf_analyze",
+        "description": "ELF/SO 结构分析三板斧: 文件类型/ELF头/动态段/导出符号 + 可疑字符串(链接/密钥/路径)。",
+        "command": "echo '=== file ==='; file '{{path}}'; echo; echo '=== ELF header ==='; readelf -h '{{path}}'; echo; echo '=== dynamic ==='; readelf -d '{{path}}' | head -30; echo; echo '=== JNI/导出 ==='; readelf --dyn-syms '{{path}}' | grep -E 'Java_|JNI_' | head -30; echo; echo '=== 可疑字符串 ==='; strings -n 6 '{{path}}' | grep -iE 'http|key|token|secret|password|\\.so|/data/|/sdcard/' | head -40",
+        "timeoutSec": 120,
+        "params": [
+          { "name": "path", "description": "ELF/SO 容器内路径", "required": true }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "frida-helper",
+    "name": "Frida 脚手架",
+    "version": "1.0.0",
+    "description": "Frida 逆向辅助: 生成 hook 脚手架脚本(Java 层), 供 agent 微调后部署。",
+    "author": "IDAdroid 内置",
+    "tools": [
+      {
+        "name": "frida_java_scaffold",
+        "description": "生成 Frida Java hook 脚手架脚本, 保存到工作区并返回内容。目标类方法列表自行填入。",
+        "command": "cat > /root/pi_workspace/frida_java_scaffold.js << 'EOF'\n// Frida Java hook 脚手架(IDAdroid 插件生成)\nJava.perform(function () {\n    var TARGET = Java.use('{{cls}}');\n    try {\n        TARGET.{{method}}.implementation = function () {\n            var args = [].slice.call(arguments);\n            console.log('[+] {{cls}}.{{method}} called with: ' + JSON.stringify(args));\n            var ret = this.{{method}}.apply(this, args);\n            console.log('[=] return: ' + ret);\n            return ret;\n        };\n    } catch (e) { console.log('[-] hook 失败: ' + e); }\n});\nEOF\ncat /root/pi_workspace/frida_java_scaffold.js",
+        "timeoutSec": 30,
+        "params": [
+          { "name": "cls", "description": "完整类名(如 com.example.MainActivity)", "required": true },
+          { "name": "method", "description": "方法名", "required": true }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "dsha-utils",
+    "name": "DSHA 实用件",
+    "version": "1.0.0",
+    "description": "致敬 DSHA 的实用小件: 哈希/base64 转换 — 样本溯源与证据固定必备。",
+    "author": "IDAdroid 内置",
+    "tools": [
+      {
+        "name": "hash_all",
+        "description": "计算文件全套哈希(md5/sha1/sha256) + 大小, 证据固定一步到位。",
+        "command": "echo 'md5    :'; md5sum '{{path}}'; echo 'sha1   :'; sha1sum '{{path}}'; echo 'sha256 :'; sha256sum '{{path}}'; echo 'size   :'; stat -c '%s bytes' '{{path}}'",
+        "timeoutSec": 60,
+        "params": [
+          { "name": "path", "description": "容器内文件路径", "required": true }
+        ]
+      },
+      {
+        "name": "b64_tool",
+        "description": "base64 编码/解码。mode=encode|decode。",
+        "command": "if [ '{{mode}}' = 'decode' ]; then echo '{{input}}' | base64 -d; else echo '{{input}}' | base64; fi",
+        "timeoutSec": 30,
+        "params": [
+          { "name": "mode", "description": "encode 或 decode" },
+          { "name": "input", "description": "输入内容(短文本)", "required": true }
+        ]
+      }
+    ]
+  }
+]

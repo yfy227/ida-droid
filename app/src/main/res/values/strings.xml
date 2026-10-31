@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">IDAdroid</string>
+    <string name="home_about">关于</string>
+    <string name="about_title">关于</string>
+    <string name="about_back_desc">返回</string>
+    <string name="about_version_title">版本信息</string>
+    <string name="about_description_title">应用说明</string>
+    <string name="about_description_text">IDAdroid 用于在 Android 上管理用户自备的 IDA rootfs，提供图形界面、终端与 AI Agent 工作流。</string>
+    <string name="about_developer_title">核心开发者</string>
+    <string name="about_developer_name">Wsdx233</string>
+    <string name="about_qq_group_title">QQ 群</string>
+    <string name="about_qq_group_value">691778739</string>
+    <string name="about_qq_group_url">https://qm.qq.com/q/ct9wxMIEfu</string>
+    <string name="about_repo_title">开源地址</string>
+    <string name="about_repo_value">github.com/wsdx233/ida-droid</string>
+    <string name="about_repo_url">https://github.com/wsdx233/ida-droid</string>
+    <string name="about_legal_title">资源说明</string>
+    <string name="about_legal_subtitle">开源组件、资源来源与 IDA 免责声明</string>
+    <string name="about_legal_dialog_title">资源说明与免责声明</string>
+    <string name="about_legal_dialog_text">本仓库使用到的第三方开源组件与资源，请以仓库内实际源码、依赖声明和对应 LICENSE 为准，包括但不限于 AndroidX / Jetpack Compose / Material 3、Kotlin 协程与序列化、Apache Commons Compress、XZ for Java、Termux terminal 相关模块，以及仅作为适配参考或外部跳转使用的 AVNC / r2droid / BoxedAgent 等项目。\n\n项目中涉及的名称、商标、图标或上游项目版权均归原权利人所有；如分发二进制，请同时遵守相关依赖的许可证要求。\n\n重要声明：本项目不提供、不内置、不下载 IDA / IDA Pro 软件、授权文件或任何绕过授权的内容。用户必须自行准备合法授权的软件与 rootfs，并自行承担使用责任。</string>
+    <string name="about_legal_dialog_close">知道了</string>
+    <string name="about_logo_desc">应用图标</string>
+    <string name="about_app_name">IDAdroid</string>
+    <string name="about_motto">&gt; IDA Pro on Android</string>
+    <string name="keep_alive_channel_name">IDAdroid 后台保活</string>
+    <string name="keep_alive_channel_description">保持 pi RPC、终端和 VNC 相关任务在后台稳定运行。</string>
+    <string name="keep_alive_notification_title">IDAdroid 正在后台运行</string>
+    <string name="keep_alive_notification_text">保活服务已启用，建议同时关闭电池优化以减少后台被杀。</string>
+
+    <!-- Settings -->
+    <string name="settings_title">设置</string>
+    <string name="settings_section_vnc">VNC / IDA 图形界面</string>
+    <string name="settings_section_mcp">IDA MCP 服务</string>
+    <string name="settings_section_terminal">终端</string>
+    <string name="settings_section_agent">AI Agent</string>
+    <string name="settings_section_appearance">外观</string>
+    <string name="settings_section_environment">环境路径</string>
+    <string name="settings_section_diagnostics">诊断</string>
+
+    <string name="settings_vnc_port">VNC 端口</string>
+    <string name="settings_vnc_password">VNC 密码</string>
+    <string name="settings_vnc_geometry">分辨率</string>
+    <string name="settings_vnc_depth">色深</string>
+    <string name="settings_vnc_display">Display 编号</string>
+    <string name="settings_vnc_stop_on_exit">退出 App 时关闭 GUI</string>
+    <string name="settings_vnc_reset">恢复 VNC 默认设置</string>
+    <string name="settings_vnc_regenerate_password">重新生成随机密码</string>
+
+    <string name="settings_mcp_port">MCP HTTP 端口</string>
+    <string name="settings_mcp_bind_host">绑定地址</string>
+    <string name="settings_mcp_allow_origin">允许的 Origin (CORS)</string>
+    <string name="settings_mcp_stateless">无状态模式</string>
+    <string name="settings_mcp_session_keepalive">Session 保活 (秒)</string>
+    <string name="settings_mcp_sse_keepalive">SSE 保活 (秒)</string>
+    <string name="settings_mcp_auto_restart">自动重启</string>
+    <string name="settings_mcp_reset">恢复 MCP 默认设置</string>
+
+    <string name="settings_terminal_font_size">字体大小 (sp)</string>
+    <string name="settings_terminal_initial_cwd">初始工作目录</string>
+    <string name="settings_terminal_color_scheme">配色方案</string>
+    <string name="settings_terminal_reset">恢复终端默认设置</string>
+
+    <string name="settings_agent_default_thinking">默认思考级别</string>
+    <string name="settings_agent_auto_compaction">自动压缩上下文</string>
+    <string name="settings_agent_prompt_timeout">单次对话超时 (秒)</string>
+    <string name="settings_agent_reset">恢复 Agent 默认设置</string>
+
+    <string name="settings_theme_mode">主题模式</string>
+    <string name="settings_theme_system">跟随系统</string>
+    <string name="settings_theme_light">浅色</string>
+    <string name="settings_theme_dark">深色</string>
+    <string name="settings_dynamic_color">动态取色 (Android 12+)</string>
+
+    <string name="settings_ida_home">IDA 安装路径</string>
+    <string name="settings_workspace_path">Pi 工作区路径</string>
+    <string name="settings_env_reset">恢复路径默认设置</string>
+
+    <string name="settings_diagnostics_export">导出诊断日志</string>
+    <string name="settings_diagnostics_clear_cache">清除缓存</string>
+
+    <string name="settings_reset_all">恢复全部默认设置</string>
+    <string name="settings_saved">设置已保存</string>
+    <string name="settings_reset_done">已恢复默认设置</string>
+    <string name="confirm_reset">确定要恢复默认设置吗？</string>
+    <string name="confirm_reset_all">确定要恢复全部默认设置吗？此操作不可撤销。</string>
+    <string name="cancel">取消</string>
+    <string name="confirm">确定</string>
+</resources>
