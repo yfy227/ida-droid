@@ -36,6 +36,8 @@ import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.PictureInPictureAlt
+import androidx.compose.material.icons.rounded.School
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Terminal
@@ -97,6 +99,8 @@ fun MainContent(
     onOpenAgent: () -> Unit,
     onOpenTerminal: () -> Unit,
     onOpenPlugins: () -> Unit = {},
+    onOpenSkills: () -> Unit = {},
+    onToggleFloatingHub: () -> Unit = {},
     onRunTerminalCommand: (String) -> Unit,
     onShowTerminalDiagnostics: () -> Unit,
     onShowVncLog: () -> Unit,
@@ -157,6 +161,8 @@ fun MainContent(
                     onOpenSettings = onOpenSettings,
                     onOpenAgent = onOpenAgent,
                     onOpenPlugins = onOpenPlugins,
+                    onOpenSkills = onOpenSkills,
+                    onToggleFloatingHub = onToggleFloatingHub,
                     onOpenTerminal = onOpenTerminal,
                     onLaunchGui = onLaunchGui,
                     onOpenGuiPanel = { showGuiPanel = true },
@@ -304,6 +310,8 @@ private fun HomeReady(
     onOpenSettings: () -> Unit,
     onOpenAgent: () -> Unit,
     onOpenPlugins: () -> Unit = {},
+    onOpenSkills: () -> Unit = {},
+    onToggleFloatingHub: () -> Unit = {},
     onOpenTerminal: () -> Unit,
     onLaunchGui: () -> Unit,
     onOpenGuiPanel: () -> Unit,
@@ -376,6 +384,24 @@ private fun HomeReady(
             modifier = Modifier.weight(1f),
             containerColor = Color(0xFFFFF8E1),
             contentColor = Color(0xFFF57F17)
+        )
+        HomeActionCard(
+            title = "技能库",
+            description = "方法论与经验习得",
+            icon = Icons.Rounded.School,
+            onClick = onOpenSkills,
+            modifier = Modifier.weight(1f),
+            containerColor = Color(0xFFE0F7FA),
+            contentColor = Color(0xFF00838F)
+        )
+        HomeActionCard(
+            title = "悬浮中枢",
+            description = "悬浮球·随时唤起 Agent",
+            icon = Icons.Rounded.PictureInPictureAlt,
+            onClick = onToggleFloatingHub,
+            modifier = Modifier.weight(1f),
+            containerColor = Color(0xFFE3F2FD),
+            contentColor = Color(0xFF1565C0)
         )
         HomeActionCard(
             title = "设置",

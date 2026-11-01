@@ -653,12 +653,13 @@ private fun AgentConfigRequiredDialog(
         text = { Text(body) },
         confirmButton = {
             Button(onClick = if (state.agentConfigReady && sessionMissing) onChooseModel else onConfigure) {
-                Text(if (state.agentConfigReady && sessionMissing) "选择模型" else "去配置 models.json")
+                // V6.2: 文案指向新可视化配置(旧 models.json 编辑器已退役)
+                Text(if (state.agentConfigReady && sessionMissing) "选择模型" else "开始配置")
             }
         },
         dismissButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (state.agentConfigReady && sessionMissing) TextButton(onClick = onConfigure) { Text("编辑 models.json") }
+                if (state.agentConfigReady && sessionMissing) TextButton(onClick = onConfigure) { Text("编辑配置") }
                 TextButton(onClick = onDismiss) { Text("稍后") }
             }
         },
@@ -2754,22 +2755,12 @@ private fun PiSettingsTab(
     var showModelsEditor by remember(initialShowModelsEditor) { mutableStateOf(initialShowModelsEditor) }
     LaunchedEffect(state.piConfig) { if (!showModelsEditor) snapshot = state.piConfig }
 
-    if (showModelsEditor) {
-        AgentModelsEditorScreen(
-            initialJson = snapshot.modelsText,
-            onBack = {
-                showModelsEditor = false
-                onCloseEditor?.invoke()
-            },
-            onApply = { modelsJson ->
-                val next = snapshot.copy(modelsText = modelsJson, modelCatalog = parseAgentModelCatalog(modelsJson))
-                snapshot = next
-                manager.savePiConfig(next)
-                showModelsEditor = false
-                onCloseEditor?.invoke()
-            }
-        )
-        return
+    // V6.2: 自动保存 — 配置变更 800ms 防抖后自动落盘(测试/编辑即生效, 不再依赖手动保存按钮)
+    var autoSavedTick by remember { mutableStateOf(0) }
+    LaunchedEffect(snapshot) {
+        kotlinx.coroutines.delay(800)
+        runCatching { manager.savePiConfig(snapshot) }
+        autoSavedTick++
     }
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -2790,7 +2781,13 @@ private fun PiSettingsTab(
         // 旧的 settings.json / extraArgs / APPEND_SYSTEM.md 原始 JSON 编辑器已移除
         // 这些功能已被 AiConfigEditor 可视化编辑器覆盖
         item { SettingsCard("系统提示词追加") { CodeTextField("APPEND_SYSTEM.md", snapshot.appendSystem) { snapshot = snapshot.copy(appendSystem = it) } } }
-        item { Button(onClick = { manager.savePiConfig(snapshot) }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Save, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("保存 Pi 配置") } }
+        // V6.2: 自动保存指示(替代旧手动保存按钮 — 填完/测完即存)
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp))
+                Text("配置已自动保存 · 变更后 1 秒内生效", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
     }
 }
 

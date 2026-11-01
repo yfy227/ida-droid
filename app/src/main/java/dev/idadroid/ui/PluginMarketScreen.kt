@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -19,17 +20,22 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.rounded.AddCircle
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.School
 import androidx.compose.material3.Badge
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -99,6 +105,57 @@ fun PluginMarketScreen(
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // V6.2: DSHA 式可扩展 — 添加第三方插件源(URL / manifest JSON)
+            item(key = "add-source") {
+                var showAddSource by remember { mutableStateOf(false) }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { showAddSource = true },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Rounded.AddCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("添加插件源 (URL/JSON)", fontSize = 12.sp)
+                    }
+                }
+                if (showAddSource) {
+                    var sourceInput by remember { mutableStateOf("") }
+                    var addingSource by remember { mutableStateOf(false) }
+                    OutlinedCard(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("第三方插件源", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text("粘贴插件市场 URL(返回 JSON 数组) 或单个插件 manifest JSON", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            OutlinedTextField(
+                                value = sourceInput,
+                                onValueChange = { sourceInput = it },
+                                placeholder = { Text("https://example.com/plugins.json", fontSize = 12.sp) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = {
+                                        addingSource = true
+                                        pluginManager.addCustomSource(sourceInput) { ok, msg ->
+                                            addingSource = false
+                                            if (ok) showAddSource = false
+                                            else sourceInput = sourceInput  // 保留输入供修正
+                                        }
+                                    },
+                                    enabled = !addingSource && sourceInput.isNotBlank()
+                                ) {
+                                    if (addingSource) {
+                                        CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                                        Spacer(Modifier.width(4.dp))
+                                    }
+                                    Text(if (addingSource) "导入中…" else "导入", fontSize = 12.sp)
+                                }
+                                OutlinedButton(onClick = { showAddSource = false }) { Text("取消", fontSize = 12.sp) }
+                            }
+                        }
+                    }
+                }
+            }
             item {
                 Text(
                     "技能 ${skills.size} · 已启用插件 ${state.installed.count { it.enabled }} / ${state.installed.size} · 市场插件 ${state.market.size}",

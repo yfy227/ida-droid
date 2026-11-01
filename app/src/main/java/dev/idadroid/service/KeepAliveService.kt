@@ -148,10 +148,16 @@ class KeepAliveService : Service() {
 
     private fun acquireWakeLock() {
         if (wakeLock?.isHeld == true) return
-        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "idadroid:agent_turn").apply {
-            setReferenceCounted(false)
-            acquire(35 * 60 * 1000L) // 35 分钟上限(超过 TURN_HARD_LIMIT 30min + 余量), 防泄漏
+        // V6.2: 权限缺失时降级不崩(SecurityException 兜底 — 真机配置完即崩的根因修复, 双保险)
+        runCatching {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "idadroid:agent_turn").apply {
+                setReferenceCounted(false)
+                acquire(35 * 60 * 1000L) // 35 分钟上限(超过 TURN_HARD_LIMIT 30min + 余量), 防泄漏
+            }
+        }.onFailure {
+            android.util.Log.w("KeepAliveService", "WakeLock 不可用(降级无锁运行): ${it.message}")
+            wakeLock = null
         }
     }
 

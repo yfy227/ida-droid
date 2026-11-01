@@ -62,7 +62,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private enum class IdaDroidScreen { Home, Settings, Agent, About, Plugins }
+private enum class IdaDroidScreen { Home, Settings, Agent, About, Plugins, Skills }
 
 @Composable
 fun IdaDroidApp() {
@@ -104,6 +104,8 @@ fun IdaDroidApp() {
                     dev.idadroid.agent.skills.SkillLibrary.exportBodies(context.applicationContext, target)
                 }
             }
+            // V6.2: 悬浮中枢状态(权限检查 + 开关)
+            var floatingHubOn by remember { mutableStateOf(false) }
             // V5.1: 已启用插件工具注册(安装/启用/禁用后实时生效; 幂等重装 = 先全量移除再注册启用的)
             val pluginState by pluginManager.state.collectAsState()
             remember(pluginState.installed) {
@@ -233,6 +235,11 @@ fun IdaDroidApp() {
                     pluginManager = pluginManager,
                     onBackClick = { currentScreen = IdaDroidScreen.Home }
                 )
+            } else if (currentScreen == IdaDroidScreen.Skills) {
+                BackHandler { currentScreen = IdaDroidScreen.Home }
+                SkillsScreen(
+                    onBackClick = { currentScreen = IdaDroidScreen.Home }
+                )
             } else if (currentScreen == IdaDroidScreen.Agent) {
                 BoxedAgentLikeScreen(
                     envReady = envState.isReady,
@@ -268,6 +275,20 @@ fun IdaDroidApp() {
                     onOpenAbout = { currentScreen = IdaDroidScreen.About },
                     onOpenAgent = { currentScreen = IdaDroidScreen.Agent },
                     onOpenPlugins = { currentScreen = IdaDroidScreen.Plugins },
+                    onOpenSkills = { currentScreen = IdaDroidScreen.Skills },
+                    // V6.2: 悬浮中枢开关(权限未授权→引导授权; 已授权→拉起悬浮球)
+                    onToggleFloatingHub = {
+                        val ctx = context.applicationContext
+                        if (floatingHubOn) {
+                            dev.idadroid.service.FloatingHubService.stop(ctx)
+                            floatingHubOn = false
+                        } else if (dev.idadroid.service.FloatingHubService.canOverlay(ctx)) {
+                            runCatching { dev.idadroid.service.FloatingHubService.start(ctx) }
+                            floatingHubOn = true
+                        } else {
+                            runCatching { ctx.startActivity(dev.idadroid.service.FloatingHubService.overlayPermissionIntent().addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                        }
+                    },
                     onOpenTerminal = {
                         context.startActivity(Intent(context, ProotTerminalActivity::class.java))
                     },

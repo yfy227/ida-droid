@@ -5,6 +5,7 @@ import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
@@ -52,6 +53,8 @@ data class PluginManifest(
     val description: String,
     val author: String = "IDAdroid",
     val category: String = "实用工具",   // V6: 市场分组(逆向/动态分析/实用工具)
+    /** V6.2: DSHA 式浮窗挂载声明 — true 时启用插件即出现在悬浮中枢快捷栏 */
+    val floatingPanel: Boolean = false,
     val tools: List<PluginToolDef> = emptyList()
 )
 
@@ -130,6 +133,75 @@ class PluginManager(
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     private val pluginsDir = File(context.filesDir, "plugins").apply { mkdirs() }
 
+    // ════════════════════════════════════════════════════════════
+    // V6.2: DSHA 式可扩展市场 — 自定义源(URL 拉取 / manifest JSON 导入), 持久化
+    // ════════════════════════════════════════════════════════════
+    private val customMarketFile: File get() = File(pluginsDir, "custom_market.json")
+
+    private fun loadCustomMarket(): List<PluginManifest> = runCatching {
+        if (!customMarketFile.isFile) return@runCatching emptyList<PluginManifest>()
+        val text = customMarketFile.readText()
+        if (text.isBlank()) return@runCatching emptyList()
+        json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(PluginManifest.serializer()), text)
+    }.getOrDefault(emptyList())
+
+    private fun saveCustomMarket(list: List<PluginManifest>) = runCatching {
+        customMarketFile.writeText(json.encodeToString(
+            kotlinx.serialization.builtins.ListSerializer(PluginManifest.serializer()), list))
+    }
+
+    /** 添加第三方插件源: 接受 http(s) URL(拉 JSON) 或直接粘贴的 manifest JSON(单对象或数组) */
+    fun addCustomSource(input: String, onResult: (Boolean, String) -> Unit) {
+        val trimmed = input.trim()
+        if (trimmed.isEmpty()) { onResult(false, "输入为空"); return }
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            val manifests = runCatching {
+                if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+                    val conn = java.net.URL(trimmed).openConnection() as java.net.HttpURLConnection
+                    conn.connectTimeout = 15000; conn.readTimeout = 30000
+                    try {
+                        val code = conn.responseCode
+                        val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                            ?.bufferedReader()?.use { it.readText() } ?: ""
+                        check(code in 200..299) { "HTTP $code: ${body.take(120)}" }
+                        body
+                    } finally { conn.disconnect() }
+                } else trimmed
+            }.getOrElse { e ->
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { onResult(false, "拉取失败: ${e.message?.take(120)}") }
+                return@launch
+            }
+            val parsed = runCatching {
+                val t = manifests.trim()
+                if (t.startsWith("[")) json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(PluginManifest.serializer()), t)
+                else listOf(json.decodeFromString(PluginManifest.serializer(), t))
+            }.getOrElse { e ->
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { onResult(false, "JSON 解析失败: ${e.message?.take(120)}") }
+                return@launch
+            }
+            if (parsed.isEmpty()) {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { onResult(false, "源为空") }
+                return@launch
+            }
+            // 去重合并(同 id 覆盖旧版)
+            val merged = (loadCustomMarket().filter { old -> parsed.none { it.id == old.id } }) + parsed
+            saveCustomMarket(merged)
+            refresh()
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                onResult(true, "已添加 ${parsed.size} 个插件: ${parsed.joinToString { it.id }}")
+            }
+        }
+    }
+
+    /** 移除自定义源插件 */
+    fun removeCustomSource(id: String) {
+        saveCustomMarket(loadCustomMarket().filter { it.id != id })
+        refresh()
+        _state.update { it.copy(message = "已移除第三方插件 $id") }
+    }
+
+    fun isCustom(id: String): Boolean = loadCustomMarket().any { it.id == id }
+
     private val _state = MutableStateFlow(PluginsUiState())
     val state: StateFlow<PluginsUiState> = _state.asStateFlow()
 
@@ -146,11 +218,13 @@ class PluginManager(
                     InstalledPlugin(m, enabled, f.lastModified())
                 }.getOrNull()
             } ?: emptyList()
-        val market = loadMarketCatalog()
+        val market = loadMarketCatalog() + loadCustom()  // V6.2: 内置 + 第三方自定义源
         _state.update { it.copy(installed = installed, market = market, message = null) }
     }
 
     private val File.nameWithoutSuffix: String get() = name.substringBeforeLast(".")
+
+    private fun loadCustom(): List<PluginManifest> = loadCustomMarket()
 
     /** 内置市场目录(assets) */
     private fun loadMarketCatalog(): List<PluginManifest> = runCatching {
