@@ -19,3 +19,23 @@
 - 设备镜像浮窗(需 screenrecord 管线, 单独一轮)
 - inline approval(需 agent 协议改动)
 - diff 补丁渲染(需输出格式协议)
+
+
+---
+
+# V6.5 修复+优化设计(2026-11-02 早)
+
+## 已修(本轮)
+**P0: 裸域名端点报错** — "This API endpoint is not supported by the current server"
+- 根因: ChatHttpClient 无条件拼 baseUrl/chat/completions, 裸域名缺 /v1
+- 修复: EndpointCompleter 接线(裸域→/v1/chat/completions; /v1结尾→补; 完整URL原样; anthropic→/v1/messages; #禁用)
+
+## 工具流优化(下轮实现)
+1. 工具错误中文友好化+修复建议(404/401/timeout 分类)
+2. 幂等工具失败自动重试(1次, 指数退避)
+3. 工具结果行数预算(单结果≤400行, 超限折叠)
+
+## MCP 优化(下轮实现)
+1. mcp_call 超时自适应(read 30s/write 120s/batch 600s)
+2. MCP 连接心跳+自动重连
+3. pull_file 候选模糊匹配(大小写/扩展名容错)

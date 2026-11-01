@@ -217,7 +217,7 @@ class ConversationEngine(
         config: ConversationConfig,
         onEvent: (ConversationEvent) -> Unit
     ) {
-        val client = ChatHttpClient(config.baseUrl, config.apiKey, config.model, config.providerId)
+        val client = ChatHttpClient(config.baseUrl, config.apiKey, config.model, config.providerId, config.api)
         val tools = toolRegistry.definitions()
         var round = 0
 

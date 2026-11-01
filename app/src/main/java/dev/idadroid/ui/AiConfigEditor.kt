@@ -141,7 +141,9 @@ private fun presetById(id: String): ProviderPreset? = PROVIDER_PRESETS.firstOrNu
 private data class ModelConfig(val id: String, val provider: String, val name: String)
 private data class ProviderConfig(
     val id: String, val displayName: String, val baseUrl: String,
-    val envKey: String, val color: Color, val apiKey: String, val models: List<ModelConfig>
+    val envKey: String, val color: Color, val apiKey: String, val models: List<ModelConfig>,
+    // V6.5: 协议显式选择 — openai-chat(默认)/openai-responses/anthropic/google
+    val api: String = "openai-chat"
 )
 private data class ParsedConfig(
     val providers: List<ProviderConfig>, val models: List<ModelConfig>,
@@ -164,6 +166,9 @@ private fun parseConfig(modelsText: String, envText: String): ParsedConfig {
             val envKey = obj["envKey"]?.jsonPrimitive?.contentOrNull ?: "${id.uppercase()}_API_KEY"
             val apiKey = envObj[envKey] ?: ""
             val preset = presetById(id)
+            val api = obj["api"]?.jsonPrimitive?.contentOrNull ?: when (id) {
+                "anthropic" -> "anthropic"; "google" -> "google"; else -> "openai-chat"
+            }
             val displayName = obj["displayName"]?.jsonPrimitive?.contentOrNull ?: preset?.displayName ?: id
             val color = preset?.color ?: Color(0xFF6B7280)
             val providerModels = (obj["models"] as? JsonArray)?.mapNotNull { item ->
@@ -172,7 +177,7 @@ private fun parseConfig(modelsText: String, envText: String): ParsedConfig {
                 val mname = modelObj["name"]?.jsonPrimitive?.contentOrNull ?: mid
                 ModelConfig(mid, id, mname)
             } ?: emptyList()
-            providersList.add(ProviderConfig(id, displayName, baseUrl, envKey, color, apiKey, providerModels))
+            providersList.add(ProviderConfig(id, displayName, baseUrl, envKey, color, apiKey, providerModels, api))
             modelsList.addAll(providerModels)
         }
         ParsedConfig(providersList, modelsList, envObj, null)
@@ -189,6 +194,7 @@ private fun buildModelsJson(providers: List<ProviderConfig>): String {
             providers.forEach { p ->
                 put(p.id, buildJsonObject {
                     if (p.baseUrl.isNotBlank()) put("baseURL", JsonPrimitive(p.baseUrl))
+                    put("api", JsonPrimitive(p.api))
                     put("envKey", JsonPrimitive(p.envKey))
                     if (p.displayName != p.id) put("displayName", JsonPrimitive(p.displayName))
                     put("models", buildJsonArray {
@@ -311,6 +317,34 @@ fun AiConfigEditor(
                     keyboardActions = KeyboardActions(onDone = {
                         updateProvider(snapshot, parsed, currentProvider.copy(baseUrl = baseUrlInput), onSnapshotChange)
                     })
+                )
+
+                // V6.5: 协议选择 — 显式指定端点协议(补全裸域名+走对路径)
+                Text("协议", fontSize = 11.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                androidx.compose.foundation.layout.FlowRow(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(
+                        "openai-chat" to "OpenAI 兼容",
+                        "anthropic" to "Anthropic",
+                        "google" to "Gemini",
+                        "openai-responses" to "Responses"
+                    ).forEach { (apiId, label) ->
+                        androidx.compose.material3.FilterChip(
+                            selected = currentProvider.api == apiId,
+                            onClick = {
+                                updateProvider(snapshot, parsed, currentProvider.copy(api = apiId), onSnapshotChange)
+                            },
+                            label = { Text(label, fontSize = 11.sp) }
+                        )
+                    }
+                }
+                Text(
+                    when (currentProvider.api) {
+                        "anthropic" -> "POST {base}/v1/messages · Header x-api-key"
+                        "google" -> "Google 原生格式(URL 填完整 generateContent 端点)"
+                        "openai-responses" -> "POST {base}/v1/responses · 新协议(部分中转站不支持)"
+                        else -> "POST {base}/v1/chat/completions · Bearer(裸域名自动补 /v1)"
+                    },
+                    fontSize = 10.sp, color = MaterialTheme.colorScheme.outline
                 )
                 // 端点补全提示
                 if (currentProvider.baseUrl.isNotBlank() && !currentProvider.baseUrl.endsWith("#")) {

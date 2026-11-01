@@ -1016,6 +1016,9 @@ class PiAgentManager(
                 else -> return null
             }
 
+        // V6.5: 协议显式选择(provider.api 字段, 缺省按 providerId 推断)
+        val api = providerObj?.get("api")?.jsonPrimitive?.contentOrNull
+            ?: when (providerId) { "anthropic" -> "anthropic"; "google" -> "google"; else -> "openai-chat" }
         val model = (session.model ?: snapshot.defaultModel).trim().ifBlank { return null }
         val thinkingLevel = session.thinkingLevel ?: snapshot.defaultThinkingLevel.trim().takeIf { it.isNotBlank() }
         val systemPrompt = snapshot.appendSystem.ifBlank { defaultSystemAppendPrompt(workspaceProotPath) }
@@ -1028,6 +1031,7 @@ class PiAgentManager(
             apiKey = apiKey,
             model = model,
             providerId = providerId,
+            api = api,
             systemPrompt = systemPrompt,
             thinkingLevel = thinkingLevel,
             maxTokens = maxTokens

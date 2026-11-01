@@ -33,7 +33,8 @@ class ChatHttpClient(
     private val baseUrl: String,
     private val apiKey: String,
     private val model: String,
-    private val providerId: String = ""
+    private val providerId: String = "",
+    private val api: String = "openai-chat"
 ) {
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false; isLenient = true }
 
@@ -151,7 +152,18 @@ class ChatHttpClient(
             addAll(messages)
         }
 
-        val url = "${baseUrl.trimEnd('/')}/chat/completions"
+        // V6.5: 端点智能补全+协议显式路由 — 裸域补 /v1, Anthropic→/v1/messages, Responses→/responses
+        val routeKey = when {
+            api == "anthropic" || (api.isBlank() && providerId == "anthropic") -> "anthropic"
+            api == "google" || (api.isBlank() && providerId == "google") -> "google"
+            api == "openai-responses" -> "openai-responses"
+            else -> "openai"
+        }
+        val url = if (routeKey == "openai-responses") {
+            dev.idadroid.agent.EndpointCompleter.complete(baseUrl, "openai")
+                .removeSuffix("/chat/completions") + "/responses"
+        } else dev.idadroid.agent.EndpointCompleter.complete(baseUrl, routeKey)
+        // V6.5: Anthropic 协议请求头(x-api-key)将在 sendHeaders 中生效
         val bodyBytes = buildRequestBody(allMessages, tools, thinkingLevel, temperature, maxTokens, topP)
             .toString()
             .toByteArray(Charsets.UTF_8)
@@ -172,7 +184,13 @@ class ChatHttpClient(
                     doOutput = true
                     instanceFollowRedirects = true
                     setRequestProperty("Content-Type", "application/json")
-                    setRequestProperty("Authorization", "Bearer $apiKey")
+                    // V6.5: 协议感知请求头 — Anthropic 用 x-api-key+version, 其余 Bearer
+                    if (api == "anthropic") {
+                        setRequestProperty("x-api-key", apiKey)
+                        setRequestProperty("anthropic-version", "2023-06-01")
+                    } else {
+                        setRequestProperty("Authorization", "Bearer $apiKey")
+                    }
                     setRequestProperty("Accept", "text/event-stream")
                 }
                 connection = conn

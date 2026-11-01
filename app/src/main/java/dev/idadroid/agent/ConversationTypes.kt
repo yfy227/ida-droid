@@ -87,6 +87,8 @@ data class ConversationConfig(
     val apiKey: String,
     val model: String,
     val providerId: String = "",
+    // V6.5: 协议显式选择(openai-chat 默认/openai-responses/anthropic/google)
+    val api: String = "",
     val systemPrompt: String,
     val thinkingLevel: String? = null,
     val maxToolRounds: Int = 50,
