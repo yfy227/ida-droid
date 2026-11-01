@@ -106,6 +106,12 @@ fun IdaDroidApp() {
             }
             // V6.2: 悬浮中枢状态(权限检查 + 开关)
             var floatingHubOn by remember { mutableStateOf(false) }
+            // V6.3 DSHA: 注入浮窗快捷会话直发通道
+            remember(agentManager) {
+                dev.idadroid.service.FloatingHubService.agentPromptSender = { prompt ->
+                    runCatching { agentManager.sendPrompt(prompt) }
+                }
+            }
             // V5.1: 已启用插件工具注册(安装/启用/禁用后实时生效; 幂等重装 = 先全量移除再注册启用的)
             val pluginState by pluginManager.state.collectAsState()
             remember(pluginState.installed) {

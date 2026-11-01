@@ -101,6 +101,10 @@ class FloatingHubService : android.app.Service(), LifecycleOwner, ViewModelStore
         const val ACTION_START = "dev.idadroid.action.FLOATING_HUB_START"
         const val ACTION_STOP = "dev.idadroid.action.FLOATING_HUB_STOP"
 
+        /** V6.3 DSHA: 快捷会话静态桥 — UI 层注入 sendPrompt 通道(浮窗直发不切 APP) */
+        @Volatile
+        var agentPromptSender: ((String) -> Unit)? = null
+
         /** 权限检查(悬浮窗可用性) */
         fun canOverlay(context: Context): Boolean = Settings.canDrawOverlays(context)
 
@@ -324,6 +328,36 @@ private fun FloatingPanelContent(
                     }
                 }
                 HorizontalDivider(color = Color(0x1FFFFFFF))
+
+                // V6.3 DSHA: 快捷会话直发 — 浮窗内直接发消息给 agent, 不切 APP
+                var quickPrompt by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = quickPrompt,
+                        onValueChange = { quickPrompt = it },
+                        placeholder = { Text("直发消息给 Agent…", color = Color(0x4DFFFFFF), fontSize = 11.sp) },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 12.sp),
+                        modifier = androidx.compose.ui.Modifier.weight(1f),
+                        colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFFD0BCFF),
+                            unfocusedBorderColor = Color(0x33FFFFFF),
+                            cursorColor = Color(0xFFD0BCFF)
+                        )
+                    )
+                    androidx.compose.material3.IconButton(
+                        onClick = {
+                            val msg = quickPrompt.trim()
+                            if (msg.isNotEmpty()) {
+                                FloatingHubService.agentPromptSender?.invoke(msg)
+                                quickPrompt = ""
+                            }
+                        },
+                        modifier = androidx.compose.ui.Modifier.size(34.dp)
+                    ) {
+                        Icon(Icons.Rounded.Build, contentDescription = "发送", tint = Color(0xFFD0BCFF), modifier = androidx.compose.ui.Modifier.size(16.dp))
+                    }
+                }
 
                 // 面板①: 状态 HUD
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {

@@ -416,9 +416,10 @@ fun BoxedAgentLikeScreen(
                 onAbort = { manager.abort() },
                 onOpenSessions = { overlay = AgentOverlay.Sessions }
             )
-            Box(Modifier.weight(1f).fillMaxWidth()) {
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+                // V6.3 Codex: 单列呼吸排版 — 内容最大 640dp 居中, 大屏不拉满
                 LazyColumn(
-                    Modifier.fillMaxSize(),
+                    Modifier.fillMaxSize().widthIn(max = 640.dp),
                     state = listState,
                     contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -2418,9 +2419,38 @@ private fun ChatComposer(
             if (state.activeQueue.steering.isNotEmpty() || state.activeQueue.followUp.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) { state.activeQueue.steering.forEach { AssistChip(onClick = {}, label = { Text("Steer · $it") }) }; state.activeQueue.followUp.forEach { AssistChip(onClick = {}, label = { Text("Follow-up · $it") }) } }
             TurnUsageBar(usage = state.usage, isWorking = state.isWorking)
             if (attachments.isNotEmpty()) FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.Start), verticalArrangement = Arrangement.spacedBy(6.dp)) { attachments.forEach { a -> InputChip(selected = false, onClick = { onRemoveAttachment(a) }, leadingIcon = { Icon(if (a.isImage) Icons.Rounded.Visibility else Icons.Rounded.Description, contentDescription = null, modifier = Modifier.size(17.dp)) }, label = { Text("${a.name} ${formatBytes(a.size)}", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp) }, colors = InputChipDefaults.inputChipColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest, labelColor = MaterialTheme.colorScheme.onSurface, leadingIconColor = MaterialTheme.colorScheme.primary), border = InputChipDefaults.inputChipBorder(enabled = true, selected = false, borderColor = MaterialTheme.colorScheme.outlineVariant)) } }
+            // V6.3 Codex: 斜杠命令菜单 — 输入 "/" 唤出智能命令面板
+            if (text.startsWith("/") && text.length <= 14 && !text.contains(' ')) {
+                val cmdDefs = listOf(
+                    Triple("/compact", "压缩当前会话上下文(释放 token)") { manager.compact(); onTextChange("") },
+                    Triple("/new", "新建会话") { manager.createSession(); onTextChange("") },
+                    Triple("/model", "切换模型") { onShowModelMenu(true); onTextChange("") },
+                    Triple("/mcp", "MCP 状态诊断") { onSend("[MCP诊断] 请运行 mcp_status 并总结当前 ida-mcp 会话状态。"); onTextChange("") },
+                    Triple("/skills", "查看技能库") { onSend("请读取 /root/.idadroid/skills/ 下的技能索引, 列出当前可用技能和触发方式。"); onTextChange("") },
+                    Triple("/workspace", "工作区文件概览") { onSend("请列出 /root/pi_workspace 关键文件并给出分类概览。"); onTextChange("") }
+                )
+                val matched = cmdDefs.filter { it.first.startsWith(text) || text == "/" }
+                if (matched.isNotEmpty()) {
+                    Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp)) {
+                        Column(Modifier.padding(6.dp)) {
+                            matched.take(5).forEach { (cmd, desc, action) ->
+                                Row(
+                                    Modifier.fillMaxWidth().clickable { action() }.padding(horizontal = 10.dp, vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(cmd, fontSize = 13.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                                    Spacer(Modifier.width(10.dp))
+                                    Text(desc, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                            Text("  ↑↓ 输入过滤 · 点击执行", fontSize = 10.sp, color = MaterialTheme.colorScheme.outline, modifier = Modifier.padding(start = 10.dp, bottom = 4.dp))
+                        }
+                    }
+                }
+            }
             Surface(color = MaterialTheme.colorScheme.surfaceContainerHighest, shape = RoundedCornerShape(22.dp), modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp, max = 132.dp)) {
                 Box(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
-                    if (text.isBlank()) Text("输入消息", fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (text.isBlank()) Text("输入消息或 / 命令", fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     BasicTextField(value = text, onValueChange = onTextChange, textStyle = TextStyle(fontSize = 15.sp, lineHeight = 21.sp, color = MaterialTheme.colorScheme.onSurface), modifier = Modifier.fillMaxWidth())
                 }
             }
@@ -2673,7 +2703,32 @@ private fun SessionsSheet(state: AgentUiState, manager: PiAgentManager, onDismis
         SheetHeader(Icons.Rounded.Menu, "Sessions", "管理本机 pi RPC sessions")
         Column(Modifier.padding(horizontal = 14.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(onClick = { manager.createSession(); onDismiss() }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Add, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("新建 Session") }
-            state.sessions.forEach { session -> SessionRow(session, active = session.id == state.activeSessionId, onSelect = { manager.selectSession(session.id); onDismiss() }, onStartStop = { if (session.status == "running" || session.status == "working") manager.stopSession(session.id) else manager.startSession(session.id) }, onRename = { rename = session }, onDelete = { delete = session }) }
+            // V6.3 DSHA: 会话时间分组(今天/昨天/更早)
+            val grouped = state.sessions.sortedByDescending { it.lastActiveAt ?: it.updatedAt }.groupBy { s ->
+                val ts = runCatching {
+                    java.time.OffsetDateTime.parse(s.lastActiveAt ?: s.updatedAt).toInstant().toEpochMilli()
+                }.getOrDefault(0L)
+                val now = java.time.LocalDate.now()
+                val date = if (ts > 0) java.time.Instant.ofEpochMilli(ts).atZone(java.time.ZoneId.systemDefault()).toLocalDate() else null
+                when {
+                    date == null -> "更早"
+                    date == now -> "今天"
+                    date == now.minusDays(1) -> "昨天"
+                    else -> "更早"
+                }
+            }
+            listOf("今天", "昨天", "更早").forEach { label ->
+                grouped[label]?.let { sessions ->
+                    if (label != "今天") Spacer(Modifier.height(4.dp))
+                    Text(
+                        "$label · ${sessions.size}",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    sessions.forEach { session -> SessionRow(session, active = session.id == state.activeSessionId, onSelect = { manager.selectSession(session.id); onDismiss() }, onStartStop = { if (session.status == "running" || session.status == "working") manager.stopSession(session.id) else manager.startSession(session.id) }, onRename = { rename = session }, onDelete = { delete = session }) }
+                }
+            }
             Spacer(Modifier.height(20.dp))
         }
     }
