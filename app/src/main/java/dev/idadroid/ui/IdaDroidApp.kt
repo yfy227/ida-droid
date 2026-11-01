@@ -267,6 +267,7 @@ fun IdaDroidApp() {
                     onOpenSettings = { currentScreen = IdaDroidScreen.Settings },
                     onOpenAbout = { currentScreen = IdaDroidScreen.About },
                     onOpenAgent = { currentScreen = IdaDroidScreen.Agent },
+                    onOpenPlugins = { currentScreen = IdaDroidScreen.Plugins },
                     onOpenTerminal = {
                         context.startActivity(Intent(context, ProotTerminalActivity::class.java))
                     },

@@ -12,7 +12,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.School
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -20,6 +30,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -35,6 +46,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontFamily
 import dev.idadroid.agent.PluginManager
 
 /**
@@ -49,6 +62,17 @@ fun PluginMarketScreen(
 ) {
     val state by pluginManager.state.collectAsState()
     val snackbar = remember { SnackbarHostState() }
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    // V6.1: 能力市场 — 技能区数据(内置 + 经验学习晋升的 learned 技能)
+    val skills by remember {
+        mutableStateOf(
+            runCatching {
+                dev.idadroid.agent.skills.SkillLibrary.ensureLoaded(context)
+                dev.idadroid.agent.skills.SkillLibrary.all(context)
+            }.getOrDefault(emptyList())
+        )
+    }
 
     LaunchedEffect(state.message) {
         state.message?.let {
@@ -60,7 +84,7 @@ fun PluginMarketScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("插件市场") },
+                title = { Text("能力市场") },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
@@ -77,10 +101,43 @@ fun PluginMarketScreen(
         ) {
             item {
                 Text(
-                    "已启用 ${state.installed.count { it.enabled }} / ${state.installed.size} 个插件 · 市场 ${state.market.size} 个",
+                    "技能 ${skills.size} · 已启用插件 ${state.installed.count { it.enabled }} / ${state.installed.size} · 市场插件 ${state.market.size}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+            // ── V6.1: 技能区(内置方法论 + 经验学习晋升; 触发词命中即被 agent 引用) ──
+            if (skills.isNotEmpty()) {
+                item(key = "skills-header") {
+                    Text(
+                        "技能 · ${skills.count { it.origin == "learned" }} 个来自经验学习",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                val bySkillCategory = skills.groupBy { it.category }.toSortedMap()
+                bySkillCategory.forEach { (category, groupSkills) ->
+                    item(key = "skill-cat-$category") {
+                        Text(
+                            category,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                    items(groupSkills, key = { "skill-" + it.id }) { sk ->
+                        SkillCard(
+                            name = sk.name,
+                            summary = sk.summary,
+                            triggers = sk.triggers,
+                            learned = sk.origin == "learned",
+                            body = runCatching {
+                                context.assets.open("skills/${sk.file.substringAfterLast('/')}")
+                                    .bufferedReader().use { it.readText() }
+                            }.getOrDefault("")
+                        )
+                    }
+                }
             }
             // ── 已安装 ──
             items(state.installed, key = { "inst-" + it.manifest.id }) { p ->
@@ -173,6 +230,92 @@ private fun PluginCard(
                     androidx.compose.material3.TextButton(onClick = onUninstall) {
                         Text("卸载", color = MaterialTheme.colorScheme.error)
                     }
+                }
+            }
+        }
+    }
+}
+
+
+// ══════════════════════════════════════════════════════════════
+// V6.1: 技能卡 — 点开看完整方法论(触发词/流程/工具组合)
+// ══════════════════════════════════════════════════════════════
+@Composable
+private fun SkillCard(
+    name: String,
+    summary: String,
+    triggers: List<String>,
+    learned: Boolean,
+    body: String
+) {
+    var expanded by remember { mutableStateOf(false) }
+    OutlinedCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { expanded = !expanded },
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(
+                    if (learned) Icons.Rounded.School else Icons.Rounded.AutoAwesome,
+                    contentDescription = null,
+                    tint = if (learned) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp)
+                )
+                Text(name, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                Text(
+                    if (learned) "习得" else "内置",
+                    fontSize = 10.sp,
+                    color = if (learned) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .background(
+                            if (learned) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                            RoundedCornerShape(50)
+                        )
+                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                )
+                Icon(
+                    if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Text(summary, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (triggers.isNotEmpty()) {
+                androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    triggers.take(6).forEach { t ->
+                        Text(
+                            "#$t",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .background(
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                                    RoundedCornerShape(50)
+                                )
+                                .padding(horizontal = 8.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+            }
+            AnimatedVisibility(expanded) {
+                if (body.isNotBlank()) {
+                    Text(
+                        body,
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier
+                            .background(
+                                MaterialTheme.colorScheme.surfaceContainerLow,
+                                RoundedCornerShape(10.dp)
+                            )
+                            .padding(10.dp)
+                            .fillMaxWidth()
+                    )
                 }
             }
         }

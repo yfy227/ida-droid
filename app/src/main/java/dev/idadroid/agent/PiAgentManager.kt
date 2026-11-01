@@ -192,10 +192,18 @@ class PiAgentManager(
 
     // ==================== V5: MCP 桥 / 插件连线(UI 层调用) ====================
 
+    /** V6.1: UI 层持有的桥引用(MCP 拉文件直连通道) */
+    @Volatile
+    private var uiBridge: dev.idadroid.agent.McpFileBridge? = null
+
     /** V5: 注入 MCP 文件桥 — 激活 pull_file / mcp_call / mcp_status 工具的宿主能力 */
     fun setMcpFileBridge(bridge: dev.idadroid.agent.McpFileBridge?) {
+        uiBridge = bridge
         conversationEngine.setFileBridge(bridge)
     }
+
+    /** V6.1: MCP 桥直连(宿主文件→容器, UI 一键拉取用) */
+    fun mcpBridge(): dev.idadroid.agent.McpFileBridge? = uiBridge
 
     /** V5.1: 注册插件工具(插件市场启用插件后调用) */
     fun registerPluginTools(tools: List<AgentTool>) {

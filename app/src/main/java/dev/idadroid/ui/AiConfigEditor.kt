@@ -254,6 +254,10 @@ fun AiConfigEditor(
     var testingProvider by remember { mutableStateOf<String?>(null) }
     var showModelPicker by remember { mutableStateOf(false) }
     var showProviderPicker by remember { mutableStateOf(false) }
+    // V6.1: 远端模型拉取状态
+    var remoteModels by remember { mutableStateOf<List<String>>(emptyList()) }
+    var fetchingModels by remember { mutableStateOf(false) }
+    var fetchError by remember { mutableStateOf<String?>(null) }
 
     // 当前选中的 provider — 始终是 ProviderConfig 类型
     val currentProvider = remember(parsed.providers, snapshot.defaultProvider) {
@@ -354,6 +358,55 @@ fun AiConfigEditor(
                     )
                     IconButton(onClick = { showModelPicker = true }) {
                         Icon(Icons.Rounded.ExpandMore, contentDescription = "选择模型")
+                    }
+                }
+
+                // V6.1: 一键从站点拉取模型列表(/v1/models — OpenAI 兼容/Anthropic/Gemini 三协议)
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = {
+                            scope.launch {
+                                fetchingModels = true
+                                fetchError = null
+                                val result = fetchRemoteModels(currentProvider.baseUrl.trim(), currentProvider.apiKey.trim(), currentProvider.id)
+                                fetchingModels = false
+                                result.fold(
+                                    onSuccess = { models ->
+                                        remoteModels = models
+                                        if (models.isEmpty()) fetchError = "站点返回了空列表"
+                                    },
+                                    onFailure = { fetchError = "拉取失败: ${it.message?.take(120)}" }
+                                )
+                            }
+                        },
+                        enabled = !fetchingModels && currentProvider.baseUrl.isNotBlank() && currentProvider.apiKey.isNotBlank(),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        if (fetchingModels) {
+                            CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(6.dp))
+                        } else {
+                            Icon(Icons.Rounded.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                        }
+                        Text(if (fetchingModels) "拉取中…" else "从站点拉取模型列表", fontSize = 12.sp)
+                    }
+                }
+                fetchError?.let { Text("⚠️ $it", fontSize = 11.sp, color = MaterialTheme.colorScheme.error) }
+                remoteModels.take(6)?.let { models ->
+                    if (models.isNotEmpty()) {
+                        Text("✓ 站点返回 ${remoteModels.size} 个模型(点选或到选择器查看)", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                        androidx.compose.foundation.layout.FlowRow(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            models.forEach { mid ->
+                                AssistChip(
+                                    onClick = {
+                                        modelInput = mid
+                                        onSnapshotChange(snapshot.copy(defaultModel = mid, defaultProvider = currentProvider.id))
+                                    },
+                                    label = { Text(mid, fontSize = 11.sp, maxLines = 1) }
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -858,4 +911,66 @@ private fun parseImportedConfig(json: String): PiConfigSnapshot? = try {
 } catch (e: Exception) {
     android.util.Log.w("AiConfigEditor", "导入配置解析失败: ${e.message}")
     null
+}
+
+// ══════════════════════════════════════════════════════════════
+// V6.1: 一键从站点拉取模型列表
+// 协议支持: OpenAI 兼容(/v1/models, Bearer) / Anthropic(/v1/models, x-api-key)
+//          Google Gemini(/v1beta/models?key=)
+// ══════════════════════════════════════════════════════════════
+suspend fun fetchRemoteModels(
+    baseUrl: String,
+    apiKey: String,
+    providerId: String
+): kotlin.Result<List<String>> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+    runCatching {
+        require(baseUrl.isNotBlank()) { "Base URL 为空" }
+        require(apiKey.isNotBlank()) { "API Key 为空" }
+        val base = baseUrl.trim().trimEnd('/')
+        val (url, headers) = when (providerId) {
+            "anthropic" -> {
+                var u = base
+                if (!u.endsWith("/v1")) u = "$u/v1"
+                "$u/models" to mapOf(
+                    "x-api-key" to apiKey,
+                    "anthropic-version" to "2023-06-01"
+                )
+            }
+            "google" -> {
+                var u = base
+                if (!u.endsWith("/v1beta")) u = "$u/v1beta".replace("/v1beta/v1beta", "/v1beta")
+                "${u}/models" to mapOf("x-goog-api-key" to apiKey)
+            }
+            else -> {
+                // OpenAI 兼容(含 deepseek/openrouter/kimi/qwen/volc/siliconflow/自定义中转…)
+                var u = base
+                if (!u.endsWith("/v1") && !u.substringAfterLast('/').startsWith("v1")) u = "$u/v1"
+                "$u/models" to mapOf("Authorization" to "Bearer $apiKey")
+            }
+        }
+        val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        conn.connectTimeout = 15000
+        conn.readTimeout = 30000
+        headers.forEach { (k, v) -> conn.setRequestProperty(k, v) }
+        try {
+            val code = conn.responseCode
+            val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                ?.bufferedReader()?.use { it.readText() } ?: ""
+            check(code in 200..299) { "HTTP $code: ${body.take(160)}" }
+            val root = Json { ignoreUnknownKeys = true }.parseToJsonElement(body).jsonObject
+            // OpenAI/Anthropic: {data:[{id}]}  |  Gemini: {models:[{name:"models/xxx"}]}
+            val dataArr = root["data"] as? JsonArray
+            val modelsArr = root["models"] as? JsonArray
+            val ids = (dataArr ?: modelsArr)?.mapNotNull { el ->
+                val o = el as? JsonObject ?: return@mapNotNull null
+                (o["id"] as? JsonPrimitive ?: o["name"] as? JsonPrimitive)
+                    ?.contentOrNull?.trim()
+                    ?.removePrefix("models/")
+                    ?.takeIf { it.isNotBlank() }
+            } ?: emptyList()
+            ids.distinct().sorted()
+        } finally {
+            conn.disconnect()
+        }
+    }
 }

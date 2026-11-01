@@ -56,6 +56,7 @@ import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.AttachFile
+import androidx.compose.material.icons.rounded.CloudSync
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.Build
@@ -261,6 +262,53 @@ fun BoxedAgentLikeScreen(
         }
     }
 
+    // V6.1: MCP 直连拉文件 — 宿主文件经 MCP 桥进容器(不占聊天附件; 桥未就绪自动回退附件通道)
+    val mcpPullFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val bridge = manager.mcpBridge()
+            val fallback: () -> Unit = {
+                scope.launch {
+                    val att = runCatching { manager.readDraftAttachment(uri) }.getOrNull()
+                    if (att != null) {
+                        attachments = attachments + att
+                        text = appendComposerText(text, manager.fileRef("/root/pi_workspace/.upload/${att.name}"))
+                    }
+                }
+            }
+            if (bridge == null) { fallback(); return@launch }
+            runCatching {
+                val name = runCatching {
+                    context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                        val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
+                    }
+                }.getOrNull() ?: "pull_${System.currentTimeMillis()}.bin"
+                val tmp = java.io.File(context.cacheDir, "mcp_pull_${System.currentTimeMillis()}_$name")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    tmp.outputStream().use { input.copyTo(it) }
+                }
+                name to tmp
+            }.fold(
+                onSuccess = { (name, tmp) ->
+                    bridge.transfer(tmp.absolutePath).fold(
+                        onSuccess = { prootPath ->
+                            val sizeText = if (tmp.length() >= 1048576) "%.1fMB".format(tmp.length() / 1048576.0) else "${tmp.length() / 1024}KB"
+                            tmp.delete()
+                            manager.sendPrompt(
+                                "[MCP文件上传] 用户已通过 MCP 通道把宿主机文件拉入容器: " +
+                                "$name ($sizeText) → $prootPath。" +
+                                "请直接基于该文件开始分析(可先初诊, 需要时用 mcpc/ida-mcp 打开)。"
+                            )
+                        },
+                        onFailure = { fallback() }
+                    )
+                },
+                onFailure = { fallback() }
+            )
+        }
+    }
+
     if (!envReady) {
         CenterWelcomeBox("环境未 ready", "请先导入并验证 rootfs，然后再打开 Agent Chat。", null)
         return
@@ -357,6 +405,17 @@ fun BoxedAgentLikeScreen(
                 onWorkspace = { overlay = AgentOverlay.Workspace },
                 onRefresh = { manager.refresh(createDefaultIfReady = true); manager.loadMessages() }
             )
+            // V6.1: 灵动岛 — 智能状态胶囊(Codex 式中性设计; 空闲收缩/工作呼吸/点击详情)
+            DynamicIslandBar(
+                isWorking = agentState.isWorking,
+                phase = agentState.processingPhase,
+                waitDurationMs = agentState.waitDurationMs,
+                model = session.model ?: agentState.modelLabel ?: "",
+                stats = agentState.activeStats,
+                mcpOnline = false,
+                onAbort = { manager.abort() },
+                onOpenSessions = { overlay = AgentOverlay.Sessions }
+            )
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 LazyColumn(
                     Modifier.fillMaxSize(),
@@ -424,6 +483,7 @@ fun BoxedAgentLikeScreen(
                         text = removeComposerRef(text, "/root/pi_workspace/.upload/${attachment.name}")
                     },
                     onPickFiles = { pickFiles.launch(arrayOf("*/*")) },
+                    onMcpPullFile = { mcpPullFile.launch(arrayOf("*/*")) },
                     onSearchClick = { showSearch = true },
                     canSend = canSend,
                     isWorking = agentState.isWorking,
@@ -1267,18 +1327,54 @@ private fun StatusChip(status: String) {
 
 @Composable
 private fun WelcomePrompts(onPrompt: (String) -> Unit) {
-    val prompts = listOf(
-        "你好，请确认当前 IDAdroid 环境，并说明你能用哪些工具。" to "环境确认",
-        "请先阅读 /root/ida-pro-9.3/IDA_MCP_MCPC_USAGE.md，然后告诉我如何连接当前 IDA。" to "IDA MCP",
-        "请列出工作区下的关键文件。" to "查看文件",
-        "请帮我分析附件内容，并给出下一步逆向计划。" to "分析附件"
+    // V6.1: Codex 式友善首引 — 三步上手 + 分组示例(不再是冷冰冰的一句话)
+    val starterPrompts = listOf(
+        "你好！请确认当前 IDAdroid 环境(工具链/工作区/技能库),并用一句话告诉我你当前的能力。" to "🚀 快速开始",
+        "请阅读 /root/ida-pro-9.3/IDA_MCP_MCPC_USAGE.md,然后告诉我怎么连接 IDA。" to "🔗 连接 IDA",
+        "请列出 /root/pi_workspace 下的关键文件并给出分类概览。" to "📁 查看工作区",
+        "我要逆向一个样本 — 请先告诉我你会怎么初诊(样本初诊三步法),我再把文件拉进来。" to "🧪 逆向初诊"
     )
-    ElevatedCard(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(22.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("准备好开始了吗？", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
-            Text("描述任务即可开始。", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                prompts.forEach { (prompt, label) -> AssistChip(onClick = { onPrompt(prompt) }, label = { Text(label) }) }
+    val guideSteps = listOf(
+        Triple("1", "配模型", "设置里选预设站点,粘贴 Key 后一键拉取模型"),
+        Triple("2", "拉样本", "点输入框上方 🔄 把手机里的文件经 MCP 拉进容器"),
+        Triple("3", "开聊", "直接描述任务,agent 会自动调用工具链")
+    )
+    ElevatedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("开始你的第一次逆向 🛠", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
+                Text("三步上手,之后直接描述任务即可", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+            }
+            // 三步引导
+            guideSteps.forEach { (num, title, desc) ->
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Box(
+                        Modifier
+                            .size(26.dp)
+                            .background(MaterialTheme.colorScheme.primaryContainer, androidx.compose.foundation.shape.CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(num, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        Text(desc, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .4f))
+            Text("试试这些", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.primary)
+            androidx.compose.foundation.layout.FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                starterPrompts.forEach { (prompt, label) ->
+                    AssistChip(
+                        onClick = { onPrompt(prompt) },
+                        label = { Text(label, fontSize = 12.sp) }
+                    )
+                }
             }
         }
     }
@@ -2293,6 +2389,7 @@ private fun ChatComposer(
     attachments: List<DraftAttachment>,
     onRemoveAttachment: (DraftAttachment) -> Unit,
     onPickFiles: () -> Unit,
+    onMcpPullFile: () -> Unit = {},
     onSearchClick: () -> Unit,
     canSend: Boolean,
     isWorking: Boolean,
@@ -2339,6 +2436,8 @@ private fun ChatComposer(
                 ComposerIconButton(Icons.Rounded.Lightbulb, "Thinking $thinking", selected = thinking != "off", onClick = { onShowThinkingMenu(true) })
                 ComposerIconButton(Icons.Rounded.Tune, "Compact", selected = autoCompact, onClick = { onShowCompactMenu(true) })
                 ComposerIconButton(Icons.Rounded.AttachFile, "附件", selected = attachments.isNotEmpty(), onClick = onPickFiles)
+                // V6.1: MCP 直连拉文件(容器外→MCP桥→容器, 自动通知模型开始分析)
+                ComposerIconButton(Icons.Rounded.CloudSync, "MCP拉文件", selected = false, onClick = onMcpPullFile)
                 ComposerIconButton(Icons.Rounded.Add, "更多", onClick = { onShowCompactMenu(true) })
                 if (isWorking) FilledIconButton(onClick = onAbort, modifier = Modifier.size(38.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.error)) { Icon(Icons.Rounded.Stop, contentDescription = "停止", modifier = Modifier.size(22.dp)) }
                 else FilledIconButton(onClick = { onSend(null) }, enabled = canSend && state.canUseActiveSession, modifier = Modifier.size(38.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = if (canSend && state.canUseActiveSession) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, contentColor = if (canSend && state.canUseActiveSession) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant, disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .55f))) { Icon(Icons.Rounded.ArrowUpward, contentDescription = "发送", modifier = Modifier.size(22.dp)) }
