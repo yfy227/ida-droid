@@ -22,6 +22,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.rounded.AddCircle
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.School
@@ -32,6 +33,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -203,9 +205,14 @@ fun PluginMarketScreen(
                     subtitle = "v${p.manifest.version} · ${p.manifest.tools.size} 工具 · ${p.manifest.author}",
                     description = p.manifest.description,
                     toolNames = p.manifest.tools.map { it.name },
+                    toolDetails = p.manifest.tools.map { Triple(it.name, it.description, it.command) },
+                    category = p.manifest.category,
+                    floatingPanel = p.manifest.floatingPanel,
                     enabled = p.enabled,
                     onToggle = { pluginManager.setEnabled(p.manifest.id, it) },
-                    onUninstall = { pluginManager.uninstall(p.manifest.id) }
+                    onUninstall = { pluginManager.uninstall(p.manifest.id) },
+                    isCustomSource = pluginManager.isCustom(p.manifest.id),
+                    onRemoveSource = { pluginManager.removeCustomSource(p.manifest.id) }
                 )
             }
             // ── 市场未安装(V6: 按 category 分组, 组标题+组内卡) ──
@@ -226,9 +233,14 @@ fun PluginMarketScreen(
                         subtitle = "v${m.version} · ${m.tools.size} 工具 · ${m.author}",
                         description = m.description,
                         toolNames = m.tools.map { it.name },
+                        toolDetails = m.tools.map { Triple(it.name, it.description, it.command) },
+                        category = m.category,
+                        floatingPanel = m.floatingPanel,
                         enabled = false,
                         installed = false,
-                        onInstall = { pluginManager.install(m) }
+                        onInstall = { pluginManager.install(m) },
+                        isCustomSource = pluginManager.isCustom(m.id),
+                        onRemoveSource = { pluginManager.removeCustomSource(m.id) }
                     )
                 }
             }
@@ -244,12 +256,19 @@ private fun PluginCard(
     toolNames: List<String>,
     enabled: Boolean,
     installed: Boolean = true,
+    // V6.4 DSHA: 插件详情 — 点卡展开完整 manifest(工具/参数/命令模板)
+    toolDetails: List<Triple<String, String, String>> = emptyList(),
+    category: String = "",
+    floatingPanel: Boolean = false,
     onToggle: (Boolean) -> Unit = {},
     onInstall: () -> Unit = {},
-    onUninstall: () -> Unit = {}
+    onUninstall: () -> Unit = {},
+    isCustomSource: Boolean = false,
+    onRemoveSource: () -> Unit = {}
 ) {
+    var expanded by remember { mutableStateOf(false) }
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
         colors = CardDefaults.cardColors(
             containerColor = if (installed && enabled) MaterialTheme.colorScheme.secondaryContainer
             else MaterialTheme.colorScheme.surfaceVariant
@@ -258,7 +277,17 @@ private fun PluginCard(
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        if (floatingPanel) {
+                            Text("浮窗", fontSize = 9.sp, color = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.background(MaterialTheme.colorScheme.tertiaryContainer, RoundedCornerShape(50)).padding(horizontal = 6.dp, vertical = 2.dp))
+                        }
+                        if (isCustomSource) {
+                            Text("第三方", fontSize = 9.sp, color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = .5f), RoundedCornerShape(50)).padding(horizontal = 6.dp, vertical = 2.dp))
+                        }
+                    }
                     Text(subtitle, style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -283,10 +312,40 @@ private fun PluginCard(
             }
             if (installed) {
                 Spacer(Modifier.height(4.dp))
-                Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     androidx.compose.material3.TextButton(onClick = onUninstall) {
                         Text("卸载", color = MaterialTheme.colorScheme.error)
                     }
+                    if (isCustomSource) {
+                        androidx.compose.material3.TextButton(onClick = onRemoveSource) {
+                            Text("移除源", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+            // V6.4 DSHA: 展开详情 — 完整工具 manifest(名称/描述/命令模板)
+            androidx.compose.animation.AnimatedVisibility(expanded) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .4f))
+                    Text("工具清单 · ${toolNames.size}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    if (toolDetails.isEmpty()) {
+                        toolNames.forEach { t ->
+                            Text("· $t", fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    } else {
+                        toolDetails.forEach { (name, desc, command) ->
+                            Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLowest, RoundedCornerShape(10.dp)).padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Icon(Icons.Rounded.Build, contentDescription = null, modifier = Modifier.size(12.dp), tint = MaterialTheme.colorScheme.primary)
+                                    Text(name, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace)
+                                }
+                                Text(desc, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(command, fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 3, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    modifier = Modifier.background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(6.dp)).padding(6.dp).fillMaxWidth())
+                            }
+                        }
+                    }
+                    if (category.isNotBlank()) Text("分类: $category" + if (floatingPanel) " · 已挂载浮窗" else "", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }

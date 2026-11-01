@@ -18,6 +18,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -30,6 +31,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -62,6 +64,7 @@ import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.Cached
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Checklist
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Code
@@ -1708,15 +1711,69 @@ private fun MarkdownTextBlock(text: String) {
                     )
                 }
                 lines.all { isMarkdownBullet(it) } -> {
-                    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        lines.forEach { line ->
-                            Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.Top) {
-                                Text(markdownBulletMarker(line), color = colors.primary, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-                                Text(
-                                    inlineMarkdown(markdownBulletText(line), colors.onSurface, inlineCodeBackground, inlineCodeColor),
-                                    style = TextStyle(fontSize = 16.sp, lineHeight = 24.sp),
-                                    modifier = Modifier.weight(1f)
-                                )
+                    // V6.4 Codex: 计划步骤卡 — todo 列表("- [ ]"/"- [x]")结构化渲染, 当前步高亮
+                    val isTodoList = lines.any { it.trimStart().startsWith("- [") }
+                    if (isTodoList) {
+                        val steps = lines.map { l ->
+                            val t = l.trim()
+                            val done = t.startsWith("- [x]") || t.startsWith("- [X]")
+                            done to t.removePrefix("- [x]").removePrefix("- [X]").removePrefix("- [ ]").removePrefix("- [").trim()
+                        }
+                        Column(
+                            Modifier.fillMaxWidth().background(
+                                colors.surfaceContainerLowest, RoundedCornerShape(12.dp)
+                            ).border(BorderStroke(1.dp, colors.outlineVariant.copy(alpha = .6f)), RoundedCornerShape(12.dp)).padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(7.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Icon(Icons.Rounded.Checklist, contentDescription = null, tint = colors.primary, modifier = Modifier.size(14.dp))
+                                Text("执行计划", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = colors.primary)
+                                Text("${steps.count { it.first }}/${steps.size}", fontSize = 11.sp, color = colors.onSurfaceVariant, fontFamily = FontFamily.Monospace)
+                            }
+                            val firstPending = steps.indexOfFirst { !it.first }
+                            steps.forEachIndexed { i, (done, stepText) ->
+                                val active = i == firstPending
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp),
+                                    modifier = Modifier.fillMaxWidth().background(
+                                        if (active) colors.primaryContainer.copy(alpha = .35f) else androidx.compose.ui.graphics.Color.Transparent,
+                                        RoundedCornerShape(8.dp)
+                                    ).padding(horizontal = 8.dp, vertical = 5.dp)
+                                ) {
+                                    Box(
+                                        Modifier.size(16.dp).background(
+                                            if (done) colors.primary else androidx.compose.ui.graphics.Color.Transparent,
+                                            RoundedCornerShape(4.dp)
+                                        ).border(BorderStroke(1.2.dp, if (done) colors.primary else colors.outline), RoundedCornerShape(4.dp)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (done) Icon(Icons.Rounded.Check, contentDescription = null, tint = colors.onPrimary, modifier = Modifier.size(11.dp))
+                                    }
+                                    Text(
+                                        stepText,
+                                        fontSize = 14.sp, lineHeight = 20.sp,
+                                        color = when {
+                                            done -> colors.onSurfaceVariant.copy(alpha = .6f)
+                                            active -> colors.onSurface
+                                            else -> colors.onSurfaceVariant
+                                        },
+                                        textDecoration = if (done) androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (active) Text("当前", fontSize = 9.sp, color = colors.primary, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            lines.forEach { line ->
+                                Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.Top) {
+                                    Text(markdownBulletMarker(line), color = colors.primary, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        inlineMarkdown(markdownBulletText(line), colors.onSurface, inlineCodeBackground, inlineCodeColor),
+                                        style = TextStyle(fontSize = 16.sp, lineHeight = 24.sp),
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
                             }
                         }
                     }
@@ -2418,6 +2475,66 @@ private fun ChatComposer(
         Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             if (state.activeQueue.steering.isNotEmpty() || state.activeQueue.followUp.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) { state.activeQueue.steering.forEach { AssistChip(onClick = {}, label = { Text("Steer · $it") }) }; state.activeQueue.followUp.forEach { AssistChip(onClick = {}, label = { Text("Follow-up · $it") }) } }
             TurnUsageBar(usage = state.usage, isWorking = state.isWorking)
+            // V6.4 Codex: 底部状态行 — 模型 · 上下文水位 · 会话状态(常驻, 等宽数字)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Box(Modifier.size(6.dp).background(
+                    when {
+                        state.isWorking -> MaterialTheme.colorScheme.primary
+                        state.status == "running" -> Color(0xFF30A46C)
+                        else -> MaterialTheme.colorScheme.outline
+                    }, RoundedCornerShape(50)
+                ))
+                Text(
+                    model.ifBlank { "未选模型" },
+                    fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(0.4f)
+                )
+                val ctx = state.activeStats?.contextUsage
+                if (ctx != null && ctx.percent != null) {
+                    val pct = (ctx.percent * 100).toInt()
+                    Text(
+                        "ctx ${pct}%",
+                        fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+                        color = when {
+                            pct >= 85 -> MaterialTheme.colorScheme.error
+                            pct >= 60 -> Color(0xFFE5A000)
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                    // 水平条
+                    Box(
+                        Modifier
+                            .weight(0.18f)
+                            .height(3.dp)
+                            .background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(50))
+                    ) {
+                        Box(
+                            Modifier
+                                .fillMaxHeight()
+                                .fillMaxWidth(pct.coerceIn(2, 100) / 100f)
+                                .background(
+                                    if (pct >= 85) MaterialTheme.colorScheme.error
+                                    else if (pct >= 60) Color(0xFFE5A000)
+                                    else MaterialTheme.colorScheme.primary,
+                                    RoundedCornerShape(50)
+                                )
+                        )
+                    }
+                }
+                val msgs = state.activeStats?.totalMessages ?: state.messages.size
+                Text(
+                    "$msgs msg · ${if (state.isWorking) "working" else state.status.ifBlank { "idle" }}",
+                    fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(0.3f), maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+            }
             if (attachments.isNotEmpty()) FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.Start), verticalArrangement = Arrangement.spacedBy(6.dp)) { attachments.forEach { a -> InputChip(selected = false, onClick = { onRemoveAttachment(a) }, leadingIcon = { Icon(if (a.isImage) Icons.Rounded.Visibility else Icons.Rounded.Description, contentDescription = null, modifier = Modifier.size(17.dp)) }, label = { Text("${a.name} ${formatBytes(a.size)}", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp) }, colors = InputChipDefaults.inputChipColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest, labelColor = MaterialTheme.colorScheme.onSurface, leadingIconColor = MaterialTheme.colorScheme.primary), border = InputChipDefaults.inputChipBorder(enabled = true, selected = false, borderColor = MaterialTheme.colorScheme.outlineVariant)) } }
             // V6.3 Codex: 斜杠命令菜单 — 输入 "/" 唤出智能命令面板
             if (text.startsWith("/") && text.length <= 14 && !text.contains(' ')) {

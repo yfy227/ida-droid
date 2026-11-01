@@ -66,6 +66,12 @@ fun ToolGroupCard(
     val okCount = messages.count { it.toolResult?.startsWith("[ERROR") != true && it.toolResult.isNullOrBlank().not() }
     val failCount = messages.size - okCount
     val distinctTools = messages.mapNotNull { it.toolName }.distinct()
+    // V6.4 Codex: 组内耗时(相邻消息时间差 = 工具执行时长近似) + 汇总
+    val rowDurations = messages.mapIndexed { i, m ->
+        if (i < messages.size - 1) (messages[i + 1].timestamp - m.timestamp).coerceIn(0, 600_000)
+        else 0L
+    }
+    val totalDuration = rowDurations.sum()
 
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -98,6 +104,15 @@ fun ToolGroupCard(
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
+                // V6.4 Codex: 耗时汇总(等宽数字)
+                if (totalDuration > 0) {
+                    Text(
+                        if (totalDuration >= 10_000) "${totalDuration / 1000}s" else "${totalDuration}ms",
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
                 if (failCount > 0) {
                     StatusDot(Color(0xFFE5484D))
                     Spacer(Modifier.width(4.dp))
@@ -114,10 +129,12 @@ fun ToolGroupCard(
                     Icon(Icons.Rounded.ExpandLess, "收起", Modifier.size(18.dp))
                 }
             }
-            // 展开明细
+            // 展开明细 — V6.4 Codex diff 风格: 状态点 + 命令行 + 耗时 + 结果预览
             AnimatedVisibility(visible = expanded) {
                 Column {
-                    messages.forEach { m ->
+                    messages.forEachIndexed { idx, m ->
+                        val failed = m.toolResult?.startsWith("[ERROR") == true || m.toolResult.isNullOrBlank()
+                        val dur = rowDurations[idx]
                         Row(
                             Modifier
                                 .fillMaxWidth()
@@ -125,14 +142,25 @@ fun ToolGroupCard(
                                 .padding(vertical = 5.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            StatusDot(if (failed) Color(0xFFE5484D) else Color(0xFF30A46C))
+                            Spacer(Modifier.width(6.dp))
                             Text(
-                                "▸ ${m.toolName ?: "tool"}",
+                                "${m.toolName ?: "tool"}",
                                 style = MaterialTheme.typography.bodySmall.copy(
-                                    fontFamily = FontFamily.Monospace, fontSize = 11.sp
+                                    fontFamily = FontFamily.Monospace, fontSize = 11.sp,
+                                    color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
                                 ),
                                 modifier = Modifier.weight(0.34f),
                                 maxLines = 1, overflow = TextOverflow.Ellipsis
                             )
+                            if (dur > 0) {
+                                Text(
+                                    if (dur >= 10_000) "${dur / 1000}s" else "${dur}ms",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace, fontSize = 10.sp),
+                                    color = MaterialTheme.colorScheme.outline
+                                )
+                                Spacer(Modifier.width(6.dp))
+                            }
                             Text(
                                 m.toolResult?.take(64) ?: "",
                                 style = MaterialTheme.typography.bodySmall.copy(
@@ -140,7 +168,7 @@ fun ToolGroupCard(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 ),
                                 maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(0.66f)
+                                modifier = Modifier.weight(1f)
                             )
                         }
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))

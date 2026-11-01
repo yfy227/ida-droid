@@ -87,7 +87,8 @@ class FloatingHubService : android.app.Service(), LifecycleOwner, ViewModelStore
         val isWorking: Boolean = false,
         val toolCalls: Int = 0,
         val tokensIn: Long = 0,
-        val tokensOut: Long = 0
+        val tokensOut: Long = 0,
+        val skillCount: Int = 0
     )
 
     class FloatingSavedStateOwner : SavedStateRegistryOwner {
@@ -100,10 +101,33 @@ class FloatingHubService : android.app.Service(), LifecycleOwner, ViewModelStore
     companion object {
         const val ACTION_START = "dev.idadroid.action.FLOATING_HUB_START"
         const val ACTION_STOP = "dev.idadroid.action.FLOATING_HUB_STOP"
+        const val ACTION_PUSH_HUD = "dev.idadroid.action.FLOATING_HUB_PUSH_HUD"
+        const val EXTRA_IS_WORKING = "is_working"
+        const val EXTRA_TOOL_CALLS = "tool_calls"
+        const val EXTRA_TOKENS_IN = "tokens_in"
+        const val EXTRA_TOKENS_OUT = "tokens_out"
+        const val EXTRA_MODEL = "model"
+        const val EXTRA_SKILL_COUNT = "skill_count"
+        const val EXTRA_PHASE = "phase"
 
         /** V6.3 DSHA: 快捷会话静态桥 — UI 层注入 sendPrompt 通道(浮窗直发不切 APP) */
         @Volatile
         var agentPromptSender: ((String) -> Unit)? = null
+
+        /** V6.4: UI 层推 HUD(intent 通道 — 免持 Service 实例引用) */
+        fun pushHudStatic(context: Context, hud: HubHud) {
+            val intent = Intent(context, FloatingHubService::class.java).apply {
+                action = ACTION_PUSH_HUD
+                putExtra(EXTRA_IS_WORKING, hud.isWorking)
+                putExtra(EXTRA_TOOL_CALLS, hud.toolCalls)
+                putExtra(EXTRA_TOKENS_IN, hud.tokensIn)
+                putExtra(EXTRA_TOKENS_OUT, hud.tokensOut)
+                putExtra(EXTRA_MODEL, hud.model)
+                putExtra(EXTRA_SKILL_COUNT, hud.skillCount)
+                putExtra(EXTRA_PHASE, hud.phase)
+            }
+            runCatching { context.startService(intent) }
+        }
 
         /** 权限检查(悬浮窗可用性) */
         fun canOverlay(context: Context): Boolean = Settings.canDrawOverlays(context)
@@ -142,6 +166,22 @@ class FloatingHubService : android.app.Service(), LifecycleOwner, ViewModelStore
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> { teardown(); stopSelf() }
+            ACTION_PUSH_HUD -> {
+                // V6.4: 接收 UI 推送的 HUD 快照并刷新球+面板
+                hud = HubHud(
+                    isWorking = intent.getBooleanExtra(EXTRA_IS_WORKING, false),
+                    toolCalls = intent.getIntExtra(EXTRA_TOOL_CALLS, 0),
+                    tokensIn = intent.getLongExtra(EXTRA_TOKENS_IN, 0L),
+                    tokensOut = intent.getLongExtra(EXTRA_TOKENS_OUT, 0L),
+                    model = intent.getStringExtra(EXTRA_MODEL) ?: "",
+                    skillCount = intent.getIntExtra(EXTRA_SKILL_COUNT, 0),
+                    phase = intent.getStringExtra(EXTRA_PHASE) ?: ""
+                )
+                ballView?.setContent { FloatingBallContent(working = hud.isWorking, onClick = { togglePanel() }) }
+                if (panelOpen) panelView?.setContent {
+                    FloatingPanelContent(hud = hud, pluginTools = pluginManager?.stateSnapshotForHub() ?: emptyList(), onClose = { togglePanel() })
+                }
+            }
             else -> if (ballView == null) attachBall()
         }
         return START_STICKY
@@ -369,6 +409,7 @@ private fun FloatingPanelContent(
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("工具调用 ${hud.toolCalls}", color = Color(0x99FFFFFF), fontSize = 10.sp)
                         Text("tokens ${hud.tokensIn}/${hud.tokensOut}", color = Color(0x99FFFFFF), fontSize = 10.sp)
+                        if (hud.skillCount > 0) Text("技能 ${hud.skillCount}", color = Color(0x99FFFFFF), fontSize = 10.sp)
                     }
                 }
 

@@ -123,6 +123,32 @@ fun IdaDroidApp() {
             val envState by manager.state.collectAsState()
             val guiState by vncManager.state.collectAsState()
             val agentState by agentManager.state.collectAsState()
+            // V6.4 DSHA: 浮窗 HUD 实时推送(模型/技能数/token/工具数, 球+面板同步)
+            LaunchedEffect(
+                agentState.isWorking, agentState.processingPhase,
+                agentState.activeStats?.toolCalls, agentState.activeStats?.tokens?.input, agentState.activeStats?.tokens?.output,
+                agentState.modelLabel, agentState.activeSession?.model
+            ) {
+                if (floatingHubOn) {
+                    val stats = agentState.activeStats
+                    runCatching {
+                        dev.idadroid.service.FloatingHubService.pushHudStatic(
+                            context.applicationContext,
+                            dev.idadroid.service.FloatingHubService.HubHud(
+                                isWorking = agentState.isWorking,
+                                toolCalls = stats?.toolCalls ?: 0,
+                                tokensIn = stats?.tokens?.input ?: 0,
+                                tokensOut = stats?.tokens?.output ?: 0,
+                                model = agentState.activeSession?.model ?: agentState.modelLabel ?: "",
+                                phase = agentState.processingPhase ?: "",
+                                skillCount = runCatching {
+                                    dev.idadroid.agent.skills.SkillLibrary.enabled(context.applicationContext).size
+                                }.getOrDefault(0)
+                            )
+                        )
+                    }
+                }
+            }
             val mcpState by mcpManager.state.collectAsState()
             val vncSettings by settingsStore.vncSettings.collectAsState()
             val scope = rememberCoroutineScope()
