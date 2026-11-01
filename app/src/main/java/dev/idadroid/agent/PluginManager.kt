@@ -51,6 +51,7 @@ data class PluginManifest(
     val version: String,
     val description: String,
     val author: String = "IDAdroid",
+    val category: String = "实用工具",   // V6: 市场分组(逆向/动态分析/实用工具)
     val tools: List<PluginToolDef> = emptyList()
 )
 

@@ -94,20 +94,29 @@ fun PluginMarketScreen(
                     onUninstall = { pluginManager.uninstall(p.manifest.id) }
                 )
             }
-            // ── 市场未安装 ──
-            items(
-                state.market.filter { m -> state.installed.none { it.manifest.id == m.id } },
-                key = { "market-" + it.id }
-            ) { m ->
-                PluginCard(
-                    title = m.name,
-                    subtitle = "v${m.version} · ${m.tools.size} 工具 · ${m.author}",
-                    description = m.description,
-                    toolNames = m.tools.map { it.name },
-                    enabled = false,
-                    installed = false,
-                    onInstall = { pluginManager.install(m) }
-                )
+            // ── 市场未安装(V6: 按 category 分组, 组标题+组内卡) ──
+            val notInstalled = state.market.filter { m -> state.installed.none { it.manifest.id == m.id } }
+            val byCategory = notInstalled.groupBy { it.category }.toSortedMap()
+            byCategory.forEach { (category, plugins) ->
+                item(key = "cat-$category") {
+                    Text(
+                        category,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+                items(plugins, key = { "market-" + it.id }) { m ->
+                    PluginCard(
+                        title = m.name,
+                        subtitle = "v${m.version} · ${m.tools.size} 工具 · ${m.author}",
+                        description = m.description,
+                        toolNames = m.tools.map { it.name },
+                        enabled = false,
+                        installed = false,
+                        onInstall = { pluginManager.install(m) }
+                    )
+                }
             }
         }
     }

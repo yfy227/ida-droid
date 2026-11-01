@@ -1,0 +1,121 @@
+{
+ "skills": [
+  {
+   "id": "skill-recon",
+   "name": "样本初诊三步法",
+   "category": "逆向",
+   "triggers": [
+    "初诊",
+    "指纹",
+    "壳检测",
+    "这是什么"
+   ],
+   "summary": "新样本到手的标准第一动作: 指纹/熵/壳/入口全维度快诊",
+   "file": "/skill/skill-recon.md",
+   "origin": "builtin",
+   "enabled": true
+  },
+  {
+   "id": "skill-unpack",
+   "name": "壳识别与脱壳路线",
+   "category": "逆向",
+   "triggers": [
+    "脱壳",
+    "加固",
+    "360",
+    "梆梆"
+   ],
+   "summary": "按壳特征选择脱壳路线(动态dump/运行时脱壳/静态重建)",
+   "file": "/skill/skill-unpack.md",
+   "origin": "builtin",
+   "enabled": true
+  },
+  {
+   "id": "skill-ida-auto",
+   "name": "ida-mcp 自动化循环",
+   "category": "逆向",
+   "triggers": [
+    "ida",
+    "批量命名",
+    "交叉引用",
+    "结构体"
+   ],
+   "summary": "用 ida-mcp 做函数命名/交叉引用/结构体批量自动化",
+   "file": "/skill/skill-ida-auto.md",
+   "origin": "builtin",
+   "enabled": true
+  },
+  {
+   "id": "skill-frida-trace",
+   "name": "Frida 动态跟踪",
+   "category": "动态分析",
+   "triggers": [
+    "frida",
+    "hook",
+    "动态调"
+   ],
+   "summary": "Frida hook 模板/参数打印/主动调用三件套",
+   "file": "/skill/skill-frida-trace.md",
+   "origin": "builtin",
+   "enabled": true
+  },
+  {
+   "id": "skill-protocol",
+   "name": "协议还原方法",
+   "category": "协议",
+   "triggers": [
+    "协议",
+    "抓包",
+    "签名",
+    "密钥"
+   ],
+   "summary": "分层抓包→定位加密函数→密钥矩阵→签名公式还原",
+   "file": "/skill/skill-protocol.md",
+   "origin": "builtin",
+   "enabled": true
+  },
+  {
+   "id": "skill-vm-restore",
+   "name": "VM/字节码还原",
+   "category": "逆向",
+   "triggers": [
+    "vm",
+    "虚拟机",
+    "调度表",
+    "dispatcher"
+   ],
+   "summary": "VM 保护的分析路径: 调度表定位→handler 枚举→语义还原",
+   "file": "/skill/skill-vm-restore.md",
+   "origin": "builtin",
+   "enabled": true
+  },
+  {
+   "id": "skill-report",
+   "name": "交付级报告结构",
+   "category": "报告",
+   "triggers": [
+    "报告",
+    "总结",
+    "交付"
+   ],
+   "summary": "证据链/复现步骤/定论式结论的报告骨架",
+   "file": "/skill/skill-report.md",
+   "origin": "builtin",
+   "enabled": true
+  },
+  {
+   "id": "skill-batch",
+   "name": "批量文件处理管线",
+   "category": "实用",
+   "triggers": [
+    "批量",
+    "批处理",
+    "去重"
+   ],
+   "summary": "指纹去重/断点续跑/产物校验的批处理模式",
+   "file": "/skill/skill-batch.md",
+   "origin": "builtin",
+   "enabled": true
+  }
+ ]
+}

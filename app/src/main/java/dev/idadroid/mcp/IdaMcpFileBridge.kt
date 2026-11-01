@@ -23,7 +23,7 @@ class IdaMcpFileBridge(
 
     private fun client(): IdaMcpClient? {
         val state = sessionManager.state.value
-        if (state.status != IdaMcpStatus.RUNNING) return null
+        if (state.status != IdaMcpStatus.Running) return null
         return runCatching { IdaMcpClient(state.endpoint) }.getOrNull()
     }
 

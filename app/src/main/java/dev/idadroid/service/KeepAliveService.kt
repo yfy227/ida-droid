@@ -52,6 +52,17 @@ class KeepAliveService : Service() {
         }
 
         /** turn 开始 — 拉起前台服务 + WakeLock */
+        /** 手动开启保活(设置页开关/MainActivity 启动时调用) */
+        fun start(context: Context) {
+            ensureChannel(context)
+            context.startForegroundService(Intent(context, KeepAliveService::class.java))
+        }
+
+        /** 手动停止保活 */
+        fun stop(context: Context) {
+            context.stopService(Intent(context, KeepAliveService::class.java))
+        }
+
         fun beginTurn(context: Context, initialText: String = "正在连接模型…") {
             ensureChannel(context)
             val intent = Intent(context, KeepAliveService::class.java).apply {

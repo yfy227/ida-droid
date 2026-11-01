@@ -45,9 +45,6 @@ class ToolRegistry {
         tools.remove(name)
     }
 
-    /** 已注册工具名(诊断/市场 UI) */
-    fun toolNames(): List<String> = tools.keys.toList()
-
     /** 获取所有已注册工具的 OpenAI function calling 定义 */
     fun definitions(): List<ChatHttpClient.ToolDefinition> =
         tools.values.map { it.toToolDefinition() }

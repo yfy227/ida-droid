@@ -87,6 +87,12 @@ class ConversationEngine(
         toolContext.fileBridge = bridge
     }
 
+    // V6: 经验强化学习引擎(工具成败信号→模式提炼/负记忆)
+    private val experience = dev.idadroid.agent.skills.ExperienceEngine(appContext)
+
+    /** V6: 暴露给 UI(技能面板显示学习状态) */
+    val experienceEngine: dev.idadroid.agent.skills.ExperienceEngine get() = experience
+
     /** V5.1: 插件工具动态注册(插件市场启用插件后调用) */
     fun registerExtraTools(tools: List<AgentTool>) {
         tools.forEach { toolRegistry.register(it) }
@@ -277,7 +283,16 @@ class ConversationEngine(
                 val executions = toolExecutor.execute(llmResult.toolCalls) { toolCallId, toolName, args, phase, outcome ->
                     if (phase == "start") {
                         emit(ConversationEvent.ToolCallStart(toolCallId, toolName, args), onEvent)
+                        runCatching { experience.onTurnStart() }  // V6: 懒初始化(首个工具调用时)
                     } else {
+                        // V6: 经验强化学习 — 记录工具成败信号
+                        runCatching {
+                            experience.onToolResult(
+                                toolName, outcome.success,
+                                if (outcome.success) null else outcome.output.take(200),
+                                durationMs = 0L
+                            )
+                        }
                         emit(ConversationEvent.ToolCallResult(
                             toolCallId, toolName, outcome.output, outcome.success), onEvent)
                     }
@@ -439,6 +454,10 @@ class ConversationEngine(
     }
 
     private fun emit(event: ConversationEvent, onEvent: (ConversationEvent) -> Unit) {
+        // V6 经验强化学习: 轮结束钩子(全部完成出口统一收口)
+        if (event is ConversationEvent.TurnComplete) {
+            runCatching { experience.onTurnEnd() }
+        }
         onEvent(event)
         _events.tryEmit(event)
     }

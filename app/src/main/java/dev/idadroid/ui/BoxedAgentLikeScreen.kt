@@ -367,9 +367,25 @@ fun BoxedAgentLikeScreen(
                     if (agentState.messagesLoading) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
                     visibleRuntimeErrorText?.let { errorText -> item { SystemMessageCard(errorText) } }
                     if (!agentState.messagesLoading && agentState.messages.isEmpty()) item { WelcomePrompts(onPrompt = { text = it }) }
-                    items(agentState.messages, key = { it.id }) { msg ->
-                        MessageBubble(
-                            message = msg,
+                    // V6: 分组渲染 — 连续 tool 消息折叠为工具组卡(省屏+降噪)
+                    // 注意: remember 必须在 Composable 上下文(LazyListScope DSL 内不可用)
+                    val renderItems = groupMessagesForRender(agentState.messages)
+                    items(renderItems, key = { when (it) {
+                        is dev.idadroid.ui.RenderItem.Single -> "s-" + it.message.id
+                        is dev.idadroid.ui.RenderItem.ToolGroup -> "g-" + it.messages.first().id + "-" + it.messages.size
+                    } }) { item ->
+                        when (item) {
+                            is dev.idadroid.ui.RenderItem.ToolGroup -> {
+                                val first = item.messages.first()
+                                ToolGroupCard(
+                                    messages = item.messages,
+                                    onOpenToolDetail = { dialogMessage = it.toolResult.orEmpty() }
+                                )
+                            }
+                            is dev.idadroid.ui.RenderItem.Single -> {
+                                val msg = item.message
+                                MessageBubble(
+                                    message = msg,
                             autoOpenProgress = msg.id == autoOpenProgressId,
                             isLatestMessage = msg.id == lastMessage?.id,
                             // streaming 仅在正在接收文本 delta 时为 true，
@@ -385,6 +401,8 @@ fun BoxedAgentLikeScreen(
                                 saveToWorkspaceFileName = "reply-${msg.timestamp}".replace(Regex("[^0-9]"), "").take(14).ifBlank { "reply" }
                             }
                         )
+                            }
+                        }
                     }
                     if (agentState.isWorking) item { ProcessingCard(agentState.status, agentState.processingPhase, agentState.waitDurationMs) }
                     item { Spacer(Modifier.height(1.dp)) }

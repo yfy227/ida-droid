@@ -191,7 +191,7 @@ class ChatHttpClient(
                             }
                             buf.toString()
                         }
-                    }.getOrDefault("")
+                    }.getOrNull() ?: ""
                     throw ApiErrorException(code, parseApiError(errBody, code))
                 }
 

@@ -4,7 +4,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putNullable
 
 /**
  * V5: pull_file 工具 — MCP 主动拉文件(替代用户手动上传)。
@@ -98,7 +97,7 @@ class PullFileTool : AbstractAgentTool() {
                     })
                 }
             })
-            putNullable("hint", "已拉取 ${picked.name} → 可用 mcpc / deep-index / run_shell 继续分析")
+            put("hint", "已拉取 ${picked.name} → 可用 mcpc / deep-index / run_shell 继续分析")
         }.toString())
     }
 }
@@ -183,10 +182,10 @@ class McpStatusTool : AbstractAgentTool() {
                         })
                     }
                 })
-                putNullable("hint", "用 mcp_call {\"tool_name\":\"<name>\",\"args_json\":{...}} 调用")
+                put("hint", "用 mcp_call {\"tool_name\":\"<name>\",\"args_json\":{...}} 调用")
             } else {
                 put("tools_available", 0)
-                putNullable("hint", "ida-mcp 会话未启动或未就绪 — 提示用户在 MCP 面板启动会话")
+                put("hint", "ida-mcp 会话未启动或未就绪 — 提示用户在 MCP 面板启动会话")
             }
         }.toString())
     }

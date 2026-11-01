@@ -95,6 +95,15 @@ fun IdaDroidApp() {
             val pluginManager = remember { dev.idadroid.agent.PluginManager(context.applicationContext) }
             // V5: MCP 文件桥连线 — 激活 pull_file / mcp_call / mcp_status 工具(主动拉文件, 直调 ida-mcp)
             remember(mcpManager) { agentManager.setMcpFileBridge(dev.idadroid.mcp.IdaMcpFileBridge(mcpManager)) }
+            // V6: 技能库导出到 rootfs(模型 run_shell cat /root/.idadroid/skills/xxx.md 读全文)
+            remember(Unit) {
+                runCatching {
+                    val target = java.io.File(
+                        dev.idadroid.env.EnvironmentPaths.of(context.applicationContext).rootfsDir,
+                        "root/.idadroid/skills")
+                    dev.idadroid.agent.skills.SkillLibrary.exportBodies(context.applicationContext, target)
+                }
+            }
             // V5.1: 已启用插件工具注册(安装/启用/禁用后实时生效; 幂等重装 = 先全量移除再注册启用的)
             val pluginState by pluginManager.state.collectAsState()
             remember(pluginState.installed) {

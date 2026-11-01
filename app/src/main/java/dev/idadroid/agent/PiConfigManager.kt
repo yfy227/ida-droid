@@ -171,9 +171,20 @@ class PiConfigManager(
         }
     """.trimIndent() + "\n"
 
-    private fun defaultAppendSystemPrompt(): String = defaultSystemAppendPrompt(
-        workspacePath = settings.envSettings.value.workspacePath.ifBlank { "/root/pi_workspace" }
-    )
+    private fun defaultAppendSystemPrompt(): String {
+        // V6: 技能库索引 + 经验强化学习避坑段(只读, 失败不影响默认提示词)
+        val v6Section = runCatching {
+            val lib = dev.idadroid.agent.skills.SkillLibrary
+            lib.ensureLoaded(appContext)
+            val skillSection = lib.promptSection(appContext)
+            val exp = dev.idadroid.agent.skills.ExperienceEngine(appContext)
+            val avoid = dev.idadroid.agent.skills.SkillLibrary.failureSection(exp.snapshot())
+            listOf(skillSection, avoid).filter { it.isNotBlank() }.joinToString("\n\n")
+        }.getOrDefault("")
+        return defaultSystemAppendPrompt(
+            workspacePath = settings.envSettings.value.workspacePath.ifBlank { "/root/pi_workspace" }
+        ) + if (v6Section.isNotBlank()) "\n\n$v6Section" else ""
+    }
 }
 
 /** Single source of truth for the default APPEND_SYSTEM.md content. */
