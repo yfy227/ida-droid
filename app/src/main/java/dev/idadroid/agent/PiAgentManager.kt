@@ -31,6 +31,8 @@ class PiAgentManager(
     private val paths: EnvironmentPaths = EnvironmentPaths.of(context)
 ) {
     private val appContext = context.applicationContext
+    // V6.9/V7-L1: SessionStore 唯一真相源(消息+统计持久化)
+    val sessionStore = dev.idadroid.agent.SessionStore(appContext)
     private val settings = dev.idadroid.settings.IdaDroidSettings(appContext)
     /** 用户设置的工作区路径 (proot 内可见路径)，默认 /root/pi_workspace */
     private val workspaceProotPath: String get() = settings.envSettings.value.workspacePath.ifBlank { dev.idadroid.settings.IdaDroidSettings.DEFAULT_WORKSPACE_PATH }
@@ -165,6 +167,7 @@ class PiAgentManager(
             runCatching {
                 conversationEngine.abort()
                 repo.deleteSession(id)
+                sessionStore.evict(id)  // V6.9/L1: 缓存+文件全清
             }.onSuccess { refresh(createDefaultIfReady = true) }
                 .onFailure { error -> setError("删除 Session 失败：${error.message}") }
         }
@@ -327,6 +330,13 @@ class PiAgentManager(
                     if (_state.value.turnActive) setTurnActive(sessionId, false)
                     // 持久化对话历史 — 防止崩溃/重启后丢失
                     persistMessages(sessionId)
+                    // V6.9/L1: turn 统计持久化(store) — 重启后累积保留(V6.8 遗留修复)
+                    runCatching {
+                        val u = _state.value.usage
+                        if (u.totalTokens > 0) sessionStore.addTurnUsage(
+                            sessionId, u.promptTokens, u.completionTokens, u.cachedPromptTokens, u.totalTokens
+                        )
+                    }
                 }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
@@ -360,10 +370,13 @@ class PiAgentManager(
         scope.launch {
             val sessionId = id ?: _state.value.activeSessionId ?: return@launch
             _state.update { it.copy(messagesLoading = true) }
-            // V6.8 fix(P0): ①先无条件 reset engine(loadMessagesInternal 会优先读 engine 内存,
-            // 不先 reset = 旧会话消息泄漏回新会话) ②再从 session 文件读真历史 ③恢复 engine
+            // V6.9/V7-L1: store(唯一真相源)优先; 空则回退旧 session 文件 → 回灌 store
             runCatching { conversationEngine.reset() }
-            val messages = withContext(Dispatchers.IO) { loadMessagesInternal(sessionId) }
+            var messages = withContext(Dispatchers.IO) { sessionStore.messages(sessionId) }
+            if (messages.isEmpty()) {
+                messages = withContext(Dispatchers.IO) { loadMessagesInternal(sessionId) }
+                if (messages.isNotEmpty()) withContext(Dispatchers.IO) { sessionStore.replaceMessages(sessionId, messages) }
+            }
             runCatching {
                 if (messages.isNotEmpty()) {
                     val session = repo.listSessions().firstOrNull { it.id == sessionId }
@@ -380,13 +393,19 @@ class PiAgentManager(
             _state.update { it.copy(
                 messages = messages, messagesLoading = false,
                 usage = TurnUsage(),
-                activeStats = SessionStats(
-                    sessionId = sessionId,
-                    userMessages = messages.count { m -> m.role == "user" },
-                    assistantMessages = messages.count { m -> m.role == "assistant" },
-                    toolCalls = messages.count { m -> m.role == "tool" },
-                    totalMessages = messages.size
-                )
+                activeStats = (sessionStore.stats(sessionId)).let { ps ->
+                    SessionStats(
+                        sessionId = sessionId,
+                        userMessages = messages.count { m -> m.role == "user" },
+                        assistantMessages = messages.count { m -> m.role == "assistant" },
+                        toolCalls = messages.count { m -> m.role == "tool" },
+                        totalMessages = messages.size,
+                        tokens = TokenStats(
+                            input = ps.inputTokens, output = ps.outputTokens,
+                            cacheRead = ps.cacheReadTokens, total = ps.totalTokens
+                        )
+                    )
+                }
             ) }
         }
     }
