@@ -360,7 +360,22 @@ class PiAgentManager(
         scope.launch {
             val sessionId = id ?: _state.value.activeSessionId ?: return@launch
             _state.update { it.copy(messagesLoading = true) }
+            // V6.8 fix(P0): ①先无条件 reset engine(loadMessagesInternal 会优先读 engine 内存,
+            // 不先 reset = 旧会话消息泄漏回新会话) ②再从 session 文件读真历史 ③恢复 engine
+            runCatching { conversationEngine.reset() }
             val messages = withContext(Dispatchers.IO) { loadMessagesInternal(sessionId) }
+            runCatching {
+                if (messages.isNotEmpty()) {
+                    val session = repo.listSessions().firstOrNull { it.id == sessionId }
+                    val conf = session?.let { runCatching { resolveConvConfig(sessionId, it) }.getOrNull() }
+                    if (conf != null) {
+                        // 恢复 user/assistant 文本对话(tool 轮不回灌, 保持上下文干净)
+                        val apiMessages = messages.filter { it.role == "user" || it.role == "assistant" }
+                            .map { m -> dev.idadroid.agent.ChatHttpClient.ChatMessageDto(role = m.role, content = m.text) }
+                        if (apiMessages.isNotEmpty()) conversationEngine.restoreFromMessages(apiMessages, conf)
+                    }
+                }
+            }
             // V6.7: 切会话统计重置 + 从已加载消息重建计数(累积 token 待新 turn 补齐)
             _state.update { it.copy(
                 messages = messages, messagesLoading = false,
@@ -1158,10 +1173,10 @@ class PiAgentManager(
                                 toolCalls = msgs.count { m -> m.role == "tool" },
                                 totalMessages = msgs.size,
                                 tokens = TokenStats(
-                                    input = (s.tokens?.input ?: 0),
-                                    output = (s.tokens?.output ?: 0),
-                                    cacheRead = (s.tokens?.cacheRead ?: 0),
-                                    total = (s.tokens?.total ?: 0)
+                                    input = (s.tokens?.input ?: 0) + event.promptTokens,
+                                    output = (s.tokens?.output ?: 0) + event.completionTokens,
+                                    cacheRead = (s.tokens?.cacheRead ?: 0) + event.cachedPromptTokens,
+                                    total = (s.tokens?.total ?: 0) + event.totalTokens
                                 ),
                                 contextUsage = ContextUsage(
                                     tokens = null,

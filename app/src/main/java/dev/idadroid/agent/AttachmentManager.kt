@@ -8,6 +8,7 @@ import dev.idadroid.env.EnvironmentPaths
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 data class DraftAttachment(
     val name: String,
@@ -76,23 +77,26 @@ class AttachmentManager(
     }
 
     suspend fun storeAttachments(attachments: List<DraftAttachment>): List<StoredAttachment> = withContext(Dispatchers.IO) {
-        uploadHostDir.mkdirs()
-        attachments.map { draft ->
-            val file = uniqueFile(uploadHostDir, draft.name)
-            file.writeBytes(draft.bytes)
-            val prootPath = "$uploadProotPath/${file.name}"
-            StoredAttachment(
-                display = if (draft.isImage) {
-                    ChatAttachment.Image(draft.name, draft.mimeType.ifBlank { "image/png" }, Base64.encodeToString(draft.bytes, Base64.NO_WRAP), path = prootPath, size = draft.size)
-                } else {
-                    ChatAttachment.File(draft.name, prootPath, draft.size, draft.mimeType)
-                },
-                prootPath = prootPath,
-                hostFile = file,
-                isImage = draft.isImage,
-                mimeType = draft.mimeType
-            )
-        }
+        // V6.8 fix: 附件落盘限时+失败可见 — 容器 FS 卡死时不再拖死整个 turn(老板"传文件后不响应"防御)
+        kotlinx.coroutines.withTimeoutOrNull(30_000L) {
+            uploadHostDir.mkdirs()
+            attachments.map { draft ->
+                val file = uniqueFile(uploadHostDir, draft.name)
+                file.writeBytes(draft.bytes)
+                val prootPath = "$uploadProotPath/${file.name}"
+                StoredAttachment(
+                    display = if (draft.isImage) {
+                        ChatAttachment.Image(draft.name, draft.mimeType.ifBlank { "image/png" }, Base64.encodeToString(draft.bytes, Base64.NO_WRAP), path = prootPath, size = draft.size)
+                    } else {
+                        ChatAttachment.File(draft.name, prootPath, draft.size, draft.mimeType)
+                    },
+                    prootPath = prootPath,
+                    hostFile = file,
+                    isImage = draft.isImage,
+                    mimeType = draft.mimeType
+                )
+            }
+        } ?: throw java.io.IOException("附件保存超时(30s) — 工作区文件系统无响应, 请检查 rootfs 状态后重试")
     }
 
     suspend fun expandFileReferencesForPrompt(message: String, cwd: String = workspaceProotPath): ExpandedPrompt = withContext(Dispatchers.IO) {

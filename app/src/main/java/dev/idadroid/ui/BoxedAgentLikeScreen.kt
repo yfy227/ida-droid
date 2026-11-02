@@ -269,6 +269,8 @@ fun BoxedAgentLikeScreen(
     val mcpPullFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
+            // V6.8 fix: 全链路 try-catch — 任何异常绝不静默(老板实测"传文件后不响应"根因防御)
+            try {
             val bridge = manager.mcpBridge()
             val fallback: () -> Unit = {
                 scope.launch {
@@ -307,8 +309,21 @@ fun BoxedAgentLikeScreen(
                         onFailure = { fallback() }
                     )
                 },
-                onFailure = { fallback() }
+                onFailure = { e -> fallback(); android.util.Log.e("McpPull", "read fail: ${e.message}") }
             )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // 兜底回退附件通道 + 留痕(绝不静默吞)
+                android.util.Log.e("McpPull", "MCP pull exception: ${e.message}", e)
+                runCatching {
+                    val att = manager.readDraftAttachment(uri)
+                    if (att != null) {
+                        attachments = attachments + att
+                        text = appendComposerText(text, manager.fileRef("/root/pi_workspace/.upload/" + att.name))
+                    }
+                }
+            }
         }
     }
 
