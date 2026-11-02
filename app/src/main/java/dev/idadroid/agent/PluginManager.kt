@@ -183,6 +183,12 @@ class PluginManager(
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { onResult(false, "源为空") }
                 return@launch
             }
+            // V6.6: 第三方源安全审核 — 命令黑名单 + 规模上限(交互友好: 拒绝时给具体原因)
+            val audit = auditManifest(parsed)
+            if (audit.isNotEmpty()) {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { onResult(false, "安全审核未通过: $audit") }
+                return@launch
+            }
             // 去重合并(同 id 覆盖旧版)
             val merged = (loadCustomMarket().filter { old -> parsed.none { it.id == old.id } }) + parsed
             saveCustomMarket(merged)
@@ -268,4 +274,31 @@ class PluginManager(
     fun clearMessage() {
         _state.update { it.copy(message = null) }
     }
+}
+
+
+// ══════════════════════════════════════════════════════════════
+// V6.6: 第三方插件源安全审核 — 危险命令黑名单 + 规模上限
+// ══════════════════════════════════════════════════════════════
+private val PLUGIN_DANGER_PATTERNS = listOf(
+    Regex("rm\\s+-rf\\s+(/|~)"), Regex("\\bdd\\b\\s+if="), Regex("\\bmkfs\\."),
+    Regex("\\bsu\\b(\\s|$)"), Regex(">/dev/"), Regex("\\bchmod\\s+777\\s+/"),
+    Regex("\\bformat\\b.*:", RegexOption.IGNORE_CASE), Regex("rm\\s+-rf\\s+\\$"),
+    Regex("\\bcurl\\b.*\\|\\s*(ba)?sh"), Regex("\\bwget\\b.*&&\\s*(ba)?sh")
+)
+
+fun auditManifest(plugins: List<PluginManifest>): String {
+    if (plugins.size > 40) return "插件数超限(${plugins.size} > 40)"
+    plugins.forEach { m ->
+        if (m.id.length > 64 || !m.id.matches(Regex("[a-z0-9_-]+"))) return "插件 id 非法: ${m.id.take(20)}"
+        if (m.tools.size > 24) return "${m.id}: 工具数超限(${m.tools.size} > 24)"
+        m.tools.forEach { t ->
+            if (t.command.length > 8000) return "${m.id}/${t.name}: 命令模板超长"
+            if (t.timeoutSec < 5 || t.timeoutSec > 1800) return "${m.id}/${t.name}: timeoutSec 越界(${t.timeoutSec})"
+            PLUGIN_DANGER_PATTERNS.forEach { re ->
+                if (re.containsMatchIn(t.command)) return "${m.id}/${t.name}: 含危险命令(${re.pattern.take(40)})"
+            }
+        }
+    }
+    return ""
 }

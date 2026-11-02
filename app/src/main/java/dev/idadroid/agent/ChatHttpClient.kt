@@ -579,8 +579,22 @@ class ChatHttpClient(
         // Generic: { "detail": "..." }
         parsed["detail"]?.jsonPrimitive?.contentOrNull?.let { return it }
 
-        "HTTP $httpCode: $body"
+        httpFriendlyError(httpCode, body)
     } catch (_: Exception) {
-        "HTTP $httpCode: ${body.take(500)}"
+        httpFriendlyError(httpCode, body.take(500))
     }
+}
+
+// V6.6: 响应码分类中文提示 — 交互友好化(给出可操作的修复方向)
+private fun httpFriendlyError(httpCode: Int, body: String): String {
+    val hint = when (httpCode) {
+        401 -> " 🔧 API Key 无效或未授权 — 检查 Key 是否粘贴完整/是否过期"
+        403 -> " 🔧 无权限 — Key 权限不足或站点限制地区/IP"
+        404 -> " 🔧 端点不存在 — 检查 Base URL 与协议选择(裸域名会自动补 /v1; 中转站一般选'OpenAI 兼容')"
+        429 -> " 🔧 限流 — 稍后重试或换 Key"
+        in 500..599 -> " 🔧 站点服务端故障 — 稍后重试"
+        else -> ""
+    }
+    val shortBody = body.take(200).replace("\n", " ")
+    return "HTTP $httpCode$hint · $shortBody"
 }

@@ -95,6 +95,12 @@ fun IdaDroidApp() {
             val pluginManager = remember { dev.idadroid.agent.PluginManager(context.applicationContext) }
             // V5: MCP 文件桥连线 — 激活 pull_file / mcp_call / mcp_status 工具(主动拉文件, 直调 ida-mcp)
             remember(mcpManager) { agentManager.setMcpFileBridge(dev.idadroid.mcp.IdaMcpFileBridge(mcpManager)) }
+            // V6.6: 外部 MCP Server — 把 IDAdroid 能力暴露给外部 agent(端口 8823: push_file/启动分析/状态)
+            val externalMcp = remember { dev.idadroid.agent.ExternalMcpServer(context.applicationContext, 8823) }
+            remember(mcpManager) {
+                externalMcp.setBridge(dev.idadroid.mcp.IdaMcpFileBridge(mcpManager))
+                if (!externalMcp.isRunning()) externalMcp.start()
+            }
             // V6: 技能库导出到 rootfs(模型 run_shell cat /root/.idadroid/skills/xxx.md 读全文)
             remember(Unit) {
                 runCatching {
