@@ -204,6 +204,8 @@ class FileTransferManager(
         val searchDirs = hostSearchDirs()
 
         val needle = cleanName.lowercase()
+        // V6.7 MCP 优化: 模糊匹配 — 剥扩展名再匹配一次(用户说 "样本" 能命中 "样本.apk")
+        val stemNeedle = needle.substringBeforeLast('.')
         for (dir in searchDirs) {
             if (!dir.isDirectory) continue
             // 精确匹配优先
@@ -214,6 +216,10 @@ class FileTransferManager(
             }
             // 子目录浅层搜索(最多2层, 忽略隐藏目录)
             results += searchFiles(dir, needle, maxDepth = 2, limit = 8)
+            // V6.7: 剥扩展名二次匹配(仅当主匹配为空时兜底, 避免过度匹配)
+            if (results.none { it.parentFile == dir }) {
+                results += searchFiles(dir, stemNeedle, maxDepth = 1, limit = 4)
+            }
         }
         // 去重(同一文件可能出现在多个搜索根)并按修改时间排序(最新优先)
         return results.distinctBy { it.absolutePath }

@@ -258,7 +258,30 @@ class PiAgentManager(
                 appendMessage(ChatMessage(newMessageId(), "user", displayMessage, System.currentTimeMillis(), attachments = displayAttachments))
                 setTurnActive(sessionId, true)
                 val promptStartTime = System.currentTimeMillis()
-                _state.update { it.copy(activity = "正在发送消息…", processingPhase = "connecting", promptSentAt = promptStartTime, firstDeltaAt = 0L) }
+                // V6.7 fix: 会话统计累积 — 上一轮 usage 并入 activeStats(老板实测"累积都没有"的根因:
+                // activeStats 全工程从未赋值), 轮内顶部栏显示会话级累计
+                _state.update {
+                    val prevUsage = it.usage
+                    val msgs = it.messages
+                    val acc = it.activeStats
+                    it.copy(
+                        activity = "正在发送消息…", processingPhase = "connecting", promptSentAt = promptStartTime, firstDeltaAt = 0L,
+                        usage = TurnUsage(),
+                        activeStats = SessionStats(
+                            sessionId = sessionId,
+                            userMessages = msgs.count { m -> m.role == "user" },
+                            assistantMessages = msgs.count { m -> m.role == "assistant" },
+                            toolCalls = (acc?.toolCalls ?: 0),
+                            totalMessages = msgs.size,
+                            tokens = TokenStats(
+                                input = (acc?.tokens?.input ?: 0) + prevUsage.promptTokens,
+                                output = (acc?.tokens?.output ?: 0) + prevUsage.completionTokens,
+                                cacheRead = (acc?.tokens?.cacheRead ?: 0) + prevUsage.cachedPromptTokens,
+                                total = (acc?.tokens?.total ?: 0) + prevUsage.totalTokens
+                            )
+                        )
+                    )
+                }
                 // V5: 保活 — turn 进行期间前台服务 + PARTIAL_WAKE_LOCK(息屏不冻结长任务)
                 runCatching { dev.idadroid.service.KeepAliveService.beginTurn(appContext, "正在连接模型…") }
 
@@ -338,7 +361,18 @@ class PiAgentManager(
             val sessionId = id ?: _state.value.activeSessionId ?: return@launch
             _state.update { it.copy(messagesLoading = true) }
             val messages = withContext(Dispatchers.IO) { loadMessagesInternal(sessionId) }
-            _state.update { it.copy(messages = messages, messagesLoading = false) }
+            // V6.7: 切会话统计重置 + 从已加载消息重建计数(累积 token 待新 turn 补齐)
+            _state.update { it.copy(
+                messages = messages, messagesLoading = false,
+                usage = TurnUsage(),
+                activeStats = SessionStats(
+                    sessionId = sessionId,
+                    userMessages = messages.count { m -> m.role == "user" },
+                    assistantMessages = messages.count { m -> m.role == "assistant" },
+                    toolCalls = messages.count { m -> m.role == "tool" },
+                    totalMessages = messages.size
+                )
+            ) }
         }
     }
 
@@ -1105,6 +1139,9 @@ class PiAgentManager(
             }
             is ConversationEvent.TokenUsage -> {
                 _state.update {
+                    // V6.7: 轮内实时 — 消息/工具计数从 messages 直算, token 显示 累积+本轮
+                    val msgs = it.messages
+                    val acc = it.activeStats
                     it.copy(
                         usage = TurnUsage(
                             promptTokens = event.promptTokens,
@@ -1114,6 +1151,25 @@ class PiAgentManager(
                             contextWatermark = it.usage.contextWatermark,
                             lastCompaction = it.usage.lastCompaction
                         ),
+                        activeStats = (acc ?: SessionStats(sessionId = sessionId)).let { s ->
+                            s.copy(
+                                userMessages = msgs.count { m -> m.role == "user" },
+                                assistantMessages = msgs.count { m -> m.role == "assistant" },
+                                toolCalls = msgs.count { m -> m.role == "tool" },
+                                totalMessages = msgs.size,
+                                tokens = TokenStats(
+                                    input = (s.tokens?.input ?: 0),
+                                    output = (s.tokens?.output ?: 0),
+                                    cacheRead = (s.tokens?.cacheRead ?: 0),
+                                    total = (s.tokens?.total ?: 0)
+                                ),
+                                contextUsage = ContextUsage(
+                                    tokens = null,
+                                    contextWindow = null,
+                                    percent = if (it.usage.contextWatermark > 0f) it.usage.contextWatermark.toDouble() else null
+                                )
+                            )
+                        },
                         activity = if (event.cachedPromptTokens > 0) {
                             "Token — 输入 ${event.promptTokens} (缓存命中 ${event.cachedPromptTokens}, ${(event.cachedPromptTokens * 100f / event.promptTokens.coerceAtLeast(1)).toInt()}%) / 输出 ${event.completionTokens}"
                         } else {

@@ -145,10 +145,24 @@ args_json 必须是合法 JSON(如 {"name":"main"})。""".trimIndent()
         } catch (e: Exception) {
             return ToolOutcome.error("args_json 不是合法 JSON: ${e.message}\n示例: {\"name\":\"main\"}")
         }
-        return bridge.callMcpTool(toolName, innerArgsJson).fold(
+        // V6.7 MCP 优化: 超时自适应 — 按工具类型分级(读类 60s / 汇总类 300s / 全库分析类 600s)
+        val timeoutMs = when {
+            toolName.startsWith("decompile") || toolName.startsWith("get_") ||
+                toolName.startsWith("list_") || toolName.startsWith("xrefs") ||
+                toolName == "open_file" || toolName == "close_file" -> 60_000L
+            toolName.startsWith("search") || toolName.startsWith("scan") ||
+                toolName.startsWith("deep") -> 300_000L
+            toolName.contains("batch") || toolName.contains("all") -> 600_000L
+            else -> 120_000L
+        }
+        return kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
+            bridge.callMcpTool(toolName, innerArgsJson)
+        }?.fold(
             onSuccess = { ToolOutcome.success(it) },
             onFailure = { ToolOutcome.error("ida-mcp 调用失败: ${it.message}") }
-        )
+        ) ?: run {
+            ToolOutcome.error("ida-mcp '$toolName' 超时(${timeoutMs / 1000}s)。建议: 拆小分析范围或稍后重试(自动重试已启用)。")
+        }
     }
 }
 

@@ -62,22 +62,38 @@ class ToolRegistry {
             ?: return ToolOutcome.error("未知工具 '$name'，可用: ${tools.keys.joinToString(", ")}")
 
         val startTime = System.currentTimeMillis()
-        return try {
-            val result = tool.execute(argsJson, context)
+        // V6.7 工具流优化①: 幂等工具失败自动重试 1 次(指数退避 600ms; 只读类工具安全可重试)
+        val retryable = name in RETRYABLE_TOOLS
+        var attempt = 0
+        while (true) {
+            val result = try {
+                tool.execute(argsJson, context)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val msg = e.message ?: e::class.simpleName ?: "未知错误"
+                android.util.Log.w("ToolRegistry", "工具 $name 执行异常: $msg")
+                ToolOutcome.error("工具 '$name' 执行异常: $msg")
+            }
             val elapsed = System.currentTimeMillis() - startTime
             android.util.Log.d("ToolRegistry",
-                "工具 $name 执行${if (result.success) "成功" else "失败"} (${elapsed}ms)")
-            result
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            val elapsed = System.currentTimeMillis() - startTime
-            val msg = e.message ?: e::class.simpleName ?: "未知错误"
-            android.util.Log.w("ToolRegistry",
-                "工具 $name 执行异常 (${elapsed}ms): $msg")
-            ToolOutcome.error("工具 '$name' 执行异常: $msg")
+                "工具 $name 执行${if (result.success) "成功" else "失败"} (${elapsed}ms${if (attempt > 0) " 重试#$attempt" else ""})")
+
+            // V6.7: 幂等工具失败且首次 → 退避重试一次(网络抖动/瞬时故障吸收)
+            if (!result.success && retryable && attempt == 0) {
+                attempt++
+                kotlinx.coroutines.delay(600L)
+                continue
+            }
+            return result
         }
     }
+
+    /** V6.7: 可安全重试的只读/幂等工具白名单 */
+    private val RETRYABLE_TOOLS = setOf(
+        "pull_file", "mcp_status", "mcpc", "mcp_call", "cat", "ls", "read_file",
+        "deep_index", "search", "grep", "find", "file", "stat"
+    )
 
     /** 获取所有已注册工具名 */
     fun toolNames(): List<String> = tools.keys.toList()
