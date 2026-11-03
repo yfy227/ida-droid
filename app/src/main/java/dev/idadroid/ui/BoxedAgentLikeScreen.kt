@@ -138,6 +138,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Text
@@ -531,7 +532,9 @@ fun BoxedAgentLikeScreen(
                         if (needsAgentConfig) {
                             forceShowConfigDialog = true
                         } else {
-                            manager.sendPrompt(text, attachments, mode)
+                            // V7.1: 双轨路由 — v7 开关(设置页)切换新旧引擎, 同题对比
+                            if (manager.useV7Engine) manager.sendPromptV7(text, attachments)
+                            else manager.sendPrompt(text, attachments, mode)
                             text = ""
                             attachments = emptyList()
                         }
@@ -2953,6 +2956,20 @@ private fun PiSettingsTab(
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { ElevatedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) { Text("Pi config", fontWeight = FontWeight.Bold); Text("PI_CODING_AGENT_DIR: ${snapshot.materializedDir}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
         item { state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) } }
+        // V7.1: 双轨引擎开关(新旧同题对比)
+        item {
+            var v7on by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(manager.useV7Engine) }
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 6.dp),
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("v7 引擎（实验）", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Text("无状态引擎+turn状态机 · 关闭走旧引擎, 同题对比", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Switch(checked = v7on, onCheckedChange = { manager.useV7Engine = it; v7on = it })
+            }
+        }
         // ── 可视化 AI 配置编辑器（取代旧的手动 JSON 编辑） ──
         item { AiConfigEditor(snapshot = snapshot, onSnapshotChange = { snapshot = it }) }
         item {

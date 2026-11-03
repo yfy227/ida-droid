@@ -83,6 +83,10 @@ class ConversationEngine(
     }
 
     /** V5: 注入 MCP 文件桥(UI 层连线) — 供 PullFileTool/McpCallTool/McpStatusTool 使用 */
+    /** V7.1: v7 双轨通道复用旧工具链(L1-L3 换血期间桥接) */
+    val v7ToolContext: ToolContext get() = toolContext
+    val v7ToolRegistry: ToolRegistry get() = toolRegistry
+
     fun setFileBridge(bridge: McpFileBridge?) {
         toolContext.fileBridge = bridge
     }

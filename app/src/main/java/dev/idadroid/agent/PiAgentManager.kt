@@ -1,5 +1,6 @@
 package dev.idadroid.agent
 
+import dev.idadroid.v7.toApiMessage
 import android.content.Context
 import android.net.Uri
 import dev.idadroid.env.EnvironmentPaths
@@ -216,6 +217,110 @@ class PiAgentManager(
     /** V5.1: 移除插件工具(禁用/卸载) */
     fun unregisterPluginTool(name: String) {
         conversationEngine.unregisterTool(name)
+    }
+
+    // ==================== V7.1: 双轨通道(新旧并存, UI 开关切换) ====================
+    /** v7 引擎开关(实验轨道; 设置页切换, 同题对比用) */
+    @Volatile var useV7Engine: Boolean = false
+
+    fun sendPromptV7(text: String, attachments: List<DraftAttachment> = emptyList()) {
+        scope.launch {
+            sendMutex.withLock {
+                if (sendingInProgress) {
+                    _state.update { it.copy(activity = "上一条消息仍在发送中，请稍候…") }
+                    return@withLock
+                }
+                sendingInProgress = true
+                try {
+                    runCatching { sendPromptV7Internal(text, attachments) }
+                        .onFailure { setError("v7 引擎错误: ${it.message}") }
+                } finally {
+                    sendingInProgress = false
+                }
+            }
+        }
+    }
+
+    private suspend fun sendPromptV7Internal(text: String, attachments: List<DraftAttachment>) {
+        val sessionId = _state.value.activeSessionId ?: run {
+            val created = createDefaultSessionWithConfiguredModel(); refresh(); created.id
+        }
+        val trimmed = text.trim()
+        if (trimmed.isBlank() && attachments.isEmpty()) return
+        val session = repo.setActive(sessionId)
+
+        // 附件(复用限时版 storeAttachments)
+        val stored = attachmentManager.storeAttachments(attachments)
+        val displayText = buildString {
+            append(trimmed)
+            if (stored.isNotEmpty()) {
+                if (isNotEmpty() && !last().isWhitespace()) append(' ')
+                append(stored.joinToString(" ") { attachmentManager.fileRef(it.prootPath) })
+            }
+        }
+
+        // user 消息: UI 流 + L1 store 双写
+        val userMsg = ChatMessage(newMessageId(), "user", displayText, System.currentTimeMillis())
+        appendMessage(userMsg)
+        sessionStore.appendMessage(sessionId, userMsg)
+        setTurnActive(sessionId, true)
+        _state.update { it.copy(activity = "正在发送消息…", processingPhase = "connecting", promptSentAt = System.currentTimeMillis(), firstDeltaAt = 0L) }
+        runCatching { dev.idadroid.service.KeepAliveService.beginTurn(appContext, "正在连接模型(v7)…") }
+
+        try {
+            val conf = resolveConvConfig(sessionId, session)
+                ?: run { appendSystemError("配置缺失：请先在设置中配置 API Key 和 Base URL"); return }
+
+            val registry = conversationEngine.v7ToolRegistry
+            val toolCtx = conversationEngine.v7ToolContext
+            val orchestrator = dev.idadroid.v7.TurnOrchestrator(
+                runner = dev.idadroid.v7.OpenAiCompatRunner(),
+                toolExecutor = dev.idadroid.v7.V7ToolExecutorBridge(registry, toolCtx),
+                store = dev.idadroid.v7.V7TurnStoreBridge(sessionStore) { newMessageId() },
+                sink = dev.idadroid.v7.V7TurnSinkBridge(
+                    onPhase = { phase ->
+                        _state.update {
+                            it.copy(processingPhase = when (phase) {
+                                dev.idadroid.v7.TurnPhase.LLM_RUNNING -> if (it.firstDeltaAt == 0L) "connecting" else "receiving"
+                                dev.idadroid.v7.TurnPhase.TOOLS_RUNNING -> "executing_tool"
+                                dev.idadroid.v7.TurnPhase.DONE, dev.idadroid.v7.TurnPhase.FAILED -> null
+                            })
+                        }
+                    },
+                    onDeltaText = { d -> applyAssistantDeltas(textDelta = d, thinkingDelta = "") },
+                    onDeltaThinking = { d -> applyAssistantDeltas(textDelta = "", thinkingDelta = d) },
+                    onToolUpsert = { _, _, _, _, _ -> /* 工具消息由 store 驱动, turn 末快照刷新 */ },
+                    onNotice = { n -> _state.update { it.copy(activity = n) } }
+                )
+            )
+            kotlinx.coroutines.withTimeout(TURN_HARD_LIMIT_MS) {
+                orchestrator.runTurn(
+                    dev.idadroid.v7.RunRequest(
+                        config = dev.idadroid.v7.AgentEndpointConfig(
+                            baseUrl = conf.baseUrl, apiKey = conf.apiKey, model = conf.model,
+                            protocol = conf.api.ifBlank { "openai-chat" },
+                            maxTokens = conf.maxTokens, temperature = conf.temperature, topP = conf.topP
+                        ),
+                        messages = sessionStore.messages(sessionId).map { it.toApiMessage() },
+                        userText = displayText,
+                        systemPrompt = conf.systemPrompt.ifBlank { null },
+                        tools = registry.definitions().map { td ->
+                            dev.idadroid.v7.ToolDef(td.name, td.description, td.parameters.toString())
+                        },
+                        thinkingLevel = conf.thinkingLevel
+                    ),
+                    sessionId
+                )
+            }
+        } finally {
+            finishStreamingFlush()
+            if (_state.value.turnActive) setTurnActive(sessionId, false)
+            runCatching { dev.idadroid.service.KeepAliveService.endTurn(appContext) }
+            // turn 末: store → UI 全量快照(工具消息含)
+            runCatching {
+                _state.update { it.copy(messages = sessionStore.messages(sessionId)) }
+            }
+        }
     }
 
     fun sendPrompt(text: String, attachments: List<DraftAttachment> = emptyList(), sendMode: String? = null) {
