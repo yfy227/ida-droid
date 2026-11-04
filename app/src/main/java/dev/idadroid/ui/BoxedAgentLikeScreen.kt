@@ -532,7 +532,7 @@ fun BoxedAgentLikeScreen(
                         if (needsAgentConfig) {
                             forceShowConfigDialog = true
                         } else {
-                            // V7.1: 双轨路由 — v7 开关(设置页)切换新旧引擎, 同题对比
+                            // V7.3: 主轨路由 — v7 默认; 关闭开关回落旧引擎(兼容逃生舱)
                             if (manager.useV7Engine) manager.sendPromptV7(text, attachments)
                             else manager.sendPrompt(text, attachments, mode)
                             text = ""
@@ -2964,8 +2964,8 @@ private fun PiSettingsTab(
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("v7 引擎（实验）", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                    Text("无状态引擎+turn状态机 · 关闭走旧引擎, 同题对比", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("v7 引擎（主轨）", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Text("无状态引擎+turn状态机 · 关=回落旧引擎(兼容)", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Switch(checked = v7on, onCheckedChange = { manager.useV7Engine = it; v7on = it })
             }

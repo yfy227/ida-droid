@@ -220,8 +220,11 @@ class PiAgentManager(
     }
 
     // ==================== V7.1: 双轨通道(新旧并存, UI 开关切换) ====================
-    /** v7 引擎开关(实验轨道; 设置页切换, 同题对比用) */
-    @Volatile var useV7Engine: Boolean = false
+    /**
+     * V7.3 主轨反转: v7 引擎=默认主轨(L1-L3 全链), false 时回落旧引擎(兼容逃生舱)。
+     * 设置页开关语义已同步更新。
+     */
+    @Volatile var useV7Engine: Boolean = true
 
     fun sendPromptV7(text: String, attachments: List<DraftAttachment> = emptyList()) {
         scope.launch {
@@ -255,8 +258,12 @@ class PiAgentManager(
         if (trimmed.isBlank() && attachments.isEmpty()) return
         val session = repo.setActive(sessionId)
 
-        // 附件(复用限时版 storeAttachments)
+        // 附件(复用限时版 storeAttachments); 图片转 data URI 供 v7 多模态(V7.3 补齐)
         val stored = attachmentManager.storeAttachments(attachments)
+        val v7ImageUris = stored.filter { it.isImage }.map { sa ->
+            "data:${sa.mimeType.ifBlank { "image/png" }};base64," +
+                android.util.Base64.encodeToString(runCatching { sa.hostFile?.readBytes() }.getOrDefault(ByteArray(0)), android.util.Base64.NO_WRAP)
+        }
         val displayText = buildString {
             append(trimmed)
             if (stored.isNotEmpty()) {
@@ -314,6 +321,7 @@ class PiAgentManager(
                         ),
                         messages = sessionStore.messages(sessionId).map { it.toApiMessage() },
                         userText = displayText,
+                        images = v7ImageUris,
                         systemPrompt = conf.systemPrompt.ifBlank { null },
                         tools = registry.definitions().map { td ->
                             dev.idadroid.v7.ToolDef(td.name, td.description, td.parameters.toString())
