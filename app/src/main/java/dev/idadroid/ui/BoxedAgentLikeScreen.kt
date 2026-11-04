@@ -2551,6 +2551,17 @@ private fun ChatComposer(
                     modifier = Modifier.weight(0.3f), maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
             }
+            // V7.5: MCP 桥状态指示(E 类可视化 — 仅异常时显示, 不加噪音)
+            val bridgeStatus = remember(state.status) { manager.mcpBridgeStatus() }
+            if (bridgeStatus != dev.idadroid.agent.PiAgentManager.McpBridgeStatus.READY) {
+                Text(
+                    manager.mcpBridgeStatusText(),
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.tertiary,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
+                )
+            }
             if (attachments.isNotEmpty()) FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.Start), verticalArrangement = Arrangement.spacedBy(6.dp)) { attachments.forEach { a -> InputChip(selected = false, onClick = { onRemoveAttachment(a) }, leadingIcon = { Icon(if (a.isImage) Icons.Rounded.Visibility else Icons.Rounded.Description, contentDescription = null, modifier = Modifier.size(17.dp)) }, label = { Text("${a.name} ${formatBytes(a.size)}", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp) }, colors = InputChipDefaults.inputChipColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest, labelColor = MaterialTheme.colorScheme.onSurface, leadingIconColor = MaterialTheme.colorScheme.primary), border = InputChipDefaults.inputChipBorder(enabled = true, selected = false, borderColor = MaterialTheme.colorScheme.outlineVariant)) } }
             // V6.3 Codex: 斜杠命令菜单 — 输入 "/" 唤出智能命令面板
             if (text.startsWith("/") && text.length <= 14 && !text.contains(' ')) {

@@ -209,6 +209,25 @@ class PiAgentManager(
     /** V6.1: MCP 桥直连(宿主文件→容器, UI 一键拉取用) */
     fun mcpBridge(): dev.idadroid.agent.McpFileBridge? = uiBridge
 
+    // ==================== V7.5: MCP 桥状态机(E 类 — 聚合态, UI 可视化) ====================
+
+    enum class McpBridgeStatus { NOT_WIRED, WIRED_MCP_DOWN, READY, UNKNOWN }
+
+    /** 桥状态聚合: NOT_WIRED(未接线)→WIRED_MCP_DOWN(桥在但 ida-mcp 未启)→READY(全链通) */
+    fun mcpBridgeStatus(): McpBridgeStatus {
+        val bridge = uiBridge ?: return McpBridgeStatus.NOT_WIRED
+        return if (runCatching { bridge.mcpEndpoint() != null }.getOrDefault(false))
+            McpBridgeStatus.READY else McpBridgeStatus.WIRED_MCP_DOWN
+    }
+
+    /** 桥状态人性化文案(Composer 状态区/诊断用) */
+    fun mcpBridgeStatusText(): String = when (mcpBridgeStatus()) {
+        McpBridgeStatus.NOT_WIRED -> "MCP 桥未接线 — MCP拉文件/ida-mcp 工具不可用"
+        McpBridgeStatus.WIRED_MCP_DOWN -> "ida-mcp 未启动 — 请在 MCP 面板启动会话"
+        McpBridgeStatus.READY -> "MCP 全链就绪"
+        McpBridgeStatus.UNKNOWN -> "MCP 状态未知"
+    }
+
     /** V5.1: 注册插件工具(插件市场启用插件后调用) */
     fun registerPluginTools(tools: List<AgentTool>) {
         conversationEngine.registerExtraTools(tools)
@@ -1102,146 +1121,6 @@ class PiAgentManager(
             thinkingLevel = thinkingLevel,
             maxTokens = maxTokens
         )
-    }
-
-    /**
-     * 将 Engine 事件映射到 UI 状态更新。
-     * 复用 DeltaFlusher / upsertTool 等现有机制。
-     */
-    private fun handleEngineEvent(sessionId: String, event: ConversationEvent, promptStartTime: Long) {
-        when (event) {
-            is ConversationEvent.TextDelta -> {
-                if (_state.value.firstDeltaAt == 0L) {
-                    runCatching { dev.idadroid.service.KeepAliveService.updateProgress(appContext, "接收模型输出…") }
-                    _state.update { it.copy(firstDeltaAt = System.currentTimeMillis(), processingPhase = "receiving") }
-                }
-                applyAssistantDeltas(textDelta = event.text, thinkingDelta = "")
-            }
-            is ConversationEvent.ThinkingDelta -> {
-                if (_state.value.firstDeltaAt == 0L) {
-                    _state.update { it.copy(firstDeltaAt = System.currentTimeMillis(), processingPhase = "receiving") }
-                }
-                applyAssistantDeltas(textDelta = "", thinkingDelta = event.text)
-            }
-            is ConversationEvent.ToolCallStart -> {
-                runCatching { dev.idadroid.service.KeepAliveService.updateProgress(appContext, "执行工具: ${event.toolName}") }
-                finishStreamingFlush()
-                _state.update { it.copy(processingPhase = "executing_tool") }
-                upsertTool(
-                    toolCallId = event.toolCallId,
-                    name = event.toolName,
-                    args = runCatching { json.parseToJsonElement(event.args) }.getOrNull(),
-                    result = null,
-                    resultMeta = null,
-                    status = "running"
-                )
-            }
-            is ConversationEvent.ToolCallResult -> {
-                upsertTool(
-                    toolCallId = event.toolCallId,
-                    name = event.toolName,
-                    args = null,
-                    result = event.result,
-                    resultMeta = null,
-                    status = if (event.success) "done" else "error"
-                )
-            }
-            is ConversationEvent.StateChanged -> {
-                val phase = when (event.to) {
-                    is ConversationState.Connecting -> "connecting"
-                    is ConversationState.Streaming -> "receiving"
-                    is ConversationState.ExecutingTools -> "executing_tool"
-                    is ConversationState.Compacting -> "compacting"
-                    is ConversationState.Retrying -> "connecting"
-                    is ConversationState.Done, is ConversationState.Failed, is ConversationState.Aborted, ConversationState.Idle -> null
-                }
-                _state.update { it.copy(processingPhase = phase) }
-            }
-            is ConversationEvent.Error -> {
-                runCatching { dev.idadroid.service.KeepAliveService.endTurn(appContext) }
-                val message = when (val err = event.error) {
-                    is ConversationError.LlmError -> err.message
-                    is ConversationError.ToolError -> "工具 ${err.toolName} 错误: ${err.message}"
-                    is ConversationError.ToolTimeout -> "工具 ${err.toolName} 超时 (${err.timeoutMs / 1000}s)"
-                    is ConversationError.ContextOverflow -> "上下文溢出: ${err.estimatedTokens}/${err.limit} tokens"
-                    is ConversationError.MaxRoundsExceeded -> "工具调用轮次超过上限 (${err.rounds}/${err.max})"
-                    ConversationError.Aborted -> "对话已中止"
-                }
-                appendSystemError(message)
-            }
-            is ConversationEvent.TokenUsage -> {
-                _state.update {
-                    // V6.7: 轮内实时 — 消息/工具计数从 messages 直算, token 显示 累积+本轮
-                    val msgs = it.messages
-                    val acc = it.activeStats
-                    it.copy(
-                        usage = TurnUsage(
-                            promptTokens = event.promptTokens,
-                            completionTokens = event.completionTokens,
-                            totalTokens = event.totalTokens,
-                            cachedPromptTokens = event.cachedPromptTokens,
-                            contextWatermark = it.usage.contextWatermark,
-                            lastCompaction = it.usage.lastCompaction
-                        ),
-                        activeStats = (acc ?: SessionStats(sessionId = sessionId)).let { s ->
-                            s.copy(
-                                userMessages = msgs.count { m -> m.role == "user" },
-                                assistantMessages = msgs.count { m -> m.role == "assistant" },
-                                toolCalls = msgs.count { m -> m.role == "tool" },
-                                totalMessages = msgs.size,
-                                tokens = TokenStats(
-                                    input = (s.tokens?.input ?: 0) + event.promptTokens,
-                                    output = (s.tokens?.output ?: 0) + event.completionTokens,
-                                    cacheRead = (s.tokens?.cacheRead ?: 0) + event.cachedPromptTokens,
-                                    total = (s.tokens?.total ?: 0) + event.totalTokens
-                                ),
-                                contextUsage = ContextUsage(
-                                    tokens = null,
-                                    contextWindow = null,
-                                    percent = if (it.usage.contextWatermark > 0f) it.usage.contextWatermark.toDouble() else null
-                                )
-                            )
-                        },
-                        activity = if (event.cachedPromptTokens > 0) {
-                            "Token — 输入 ${event.promptTokens} (缓存命中 ${event.cachedPromptTokens}, ${(event.cachedPromptTokens * 100f / event.promptTokens.coerceAtLeast(1)).toInt()}%) / 输出 ${event.completionTokens}"
-                        } else {
-                            "Token — 输入 ${event.promptTokens} / 输出 ${event.completionTokens} / 总计 ${event.totalTokens}"
-                        }
-                    )
-                }
-            }
-            is ConversationEvent.ContextCompacted -> {
-                val r = event.report
-                val watermark = if (r.limitTokens > 0) r.afterTokens.toFloat() / r.limitTokens else 0f
-                _state.update {
-                    it.copy(
-                        usage = it.usage.copy(
-                            contextWatermark = watermark,
-                            lastCompaction = r.strategy
-                        ),
-                        activity = "上下文压缩[${r.strategy}]: ${r.beforeTokens}→${r.afterTokens} tokens" +
-                            (if (r.evictedImages > 0) ", 清理 ${r.evictedImages} 张旧图" else "")
-                    )
-                }
-            }
-            is ConversationEvent.RoundReset -> {
-                // V5: 网络重试 — 清空 UI 已渲染的本轮流式内容, 防止重试后文本翻倍
-                deltaFlusher.resetStreaming()
-            }
-            is ConversationEvent.Retrying -> {
-                appendMessage(ChatMessage(
-                    newMessageId(), "system",
-                    "网络重试中 (${event.attempt}/3)：${event.reason}，${event.delayMs / 1000}s 后重试...",
-                    System.currentTimeMillis()
-                ))
-            }
-            ConversationEvent.TurnComplete -> {
-                runCatching { dev.idadroid.service.KeepAliveService.endTurn(appContext) }
-                setTurnActive(sessionId, false)
-                repo.updateRuntimeStatus(sessionId, "running", null)
-                _state.update { it.copy(processingPhase = null, promptSentAt = 0L, firstDeltaAt = 0L) }
-            }
-        }
     }
 
     private fun workspaceFile(path: String): File {
