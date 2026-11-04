@@ -18,24 +18,29 @@ import kotlinx.coroutines.withTimeoutOrNull
 // ══════════════════════════════════════════════════════════════
 class V7TurnStoreBridge(
     private val store: SessionStore,
-    private val newId: () -> String
+    private val newId: () -> String,
+    /** V7.2: 消息落地即刷 UI(实时工具组卡/assistant 消息, 替代 turn 末快照) */
+    private val onAppend: ((ChatMessage) -> Unit)? = null
 ) : TurnStore {
+    private fun emit(m: ChatMessage) { onAppend?.invoke(m) }
 
     override fun apiMessages(sessionId: String): List<ApiMessage> =
         store.messages(sessionId).map { m -> m.toApiMessage() }
 
     override fun appendAssistant(sessionId: String, text: String, toolCalls: List<ApiToolCall>) {
-        store.appendMessage(sessionId, ChatMessage(
+        val m = ChatMessage(
             id = newId(), role = "assistant", text = text, timestamp = System.currentTimeMillis(),
             toolCallId = toolCalls.firstOrNull()?.callId, toolName = toolCalls.firstOrNull()?.toolName
-        ))
+        )
+        store.appendMessage(sessionId, m); emit(m)
         toolCalls.forEach { tc ->
             // assistant 的工具请求作为独立 tool 消息(running 态), 结果到达时 upsert
-            store.appendMessage(sessionId, ChatMessage(
+            val t = ChatMessage(
                 id = newId(), role = "tool", text = "", timestamp = System.currentTimeMillis(),
                 toolCallId = tc.callId, toolName = tc.toolName,
                 toolStatus = "running"
-            ))
+            )
+            store.appendMessage(sessionId, t); emit(t)
         }
     }
 
@@ -49,25 +54,25 @@ class V7TurnStoreBridge(
                 toolResult = result.output.take(4000), toolStatus = result.status
             )
             store.replaceMessages(sessionId, updated)
+            emit(updated[idx])
         } else {
-            store.appendMessage(sessionId, ChatMessage(
+            val t = ChatMessage(
                 id = newId(), role = "tool", text = "", timestamp = System.currentTimeMillis(),
                 toolCallId = callId, toolName = toolName,
                 toolResult = result.output.take(4000), toolStatus = result.status
-            ))
+            )
+            store.appendMessage(sessionId, t); emit(t)
         }
     }
 
     override fun appendAssistantError(sessionId: String, message: String) {
-        store.appendMessage(sessionId, ChatMessage(
-            id = newId(), role = "assistant", text = message, timestamp = System.currentTimeMillis()
-        ))
+        val m = ChatMessage(id = newId(), role = "assistant", text = message, timestamp = System.currentTimeMillis())
+        store.appendMessage(sessionId, m); emit(m)
     }
 
     override fun appendSystemNote(sessionId: String, message: String) {
-        store.appendMessage(sessionId, ChatMessage(
-            id = newId(), role = "system", text = message, timestamp = System.currentTimeMillis()
-        ))
+        val m = ChatMessage(id = newId(), role = "system", text = message, timestamp = System.currentTimeMillis())
+        store.appendMessage(sessionId, m); emit(m)
     }
 
     override fun addTurnUsage(sessionId: String, usage: Quadruple) {

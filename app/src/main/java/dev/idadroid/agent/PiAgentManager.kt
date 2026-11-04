@@ -232,8 +232,12 @@ class PiAgentManager(
                 }
                 sendingInProgress = true
                 try {
-                    runCatching { sendPromptV7Internal(text, attachments) }
-                        .onFailure { setError("v7 引擎错误: ${it.message}") }
+                    sendPromptV7Internal(text, attachments)
+                } catch (ce: kotlinx.coroutines.CancellationException) {
+                    // V7.2: abort 取消信号 — 不吞(v7 turn 状态由 finally 清)
+                    throw ce
+                } catch (e: Exception) {
+                    setError("v7 引擎错误: ${e.message}")
                 } finally {
                     sendingInProgress = false
                 }
@@ -242,6 +246,8 @@ class PiAgentManager(
     }
 
     private suspend fun sendPromptV7Internal(text: String, attachments: List<DraftAttachment>) {
+        // V7.2: 挂 job — abort() cancel 即中断 v7 turn(协作式, 各挂起点响应)
+        currentSendJob = coroutineContext[Job]
         val sessionId = _state.value.activeSessionId ?: run {
             val created = createDefaultSessionWithConfiguredModel(); refresh(); created.id
         }
@@ -276,7 +282,12 @@ class PiAgentManager(
             val orchestrator = dev.idadroid.v7.TurnOrchestrator(
                 runner = dev.idadroid.v7.OpenAiCompatRunner(),
                 toolExecutor = dev.idadroid.v7.V7ToolExecutorBridge(registry, toolCtx),
-                store = dev.idadroid.v7.V7TurnStoreBridge(sessionStore) { newMessageId() },
+                store = dev.idadroid.v7.V7TurnStoreBridge(sessionStore, { newMessageId() }) { landed ->
+                    // V7.2: 消息落地即刷 UI(工具组卡实时 running→done, 替代 turn 末快照)
+                    _state.update { st ->
+                        st.copy(messages = st.messages.filter { it.id != landed.id } + landed)
+                    }
+                },
                 sink = dev.idadroid.v7.V7TurnSinkBridge(
                     onPhase = { phase ->
                         _state.update {
@@ -315,8 +326,9 @@ class PiAgentManager(
         } finally {
             finishStreamingFlush()
             if (_state.value.turnActive) setTurnActive(sessionId, false)
+            currentSendJob = null
             runCatching { dev.idadroid.service.KeepAliveService.endTurn(appContext) }
-            // turn 末: store → UI 全量快照(工具消息含)
+            // turn 末: store → UI 全量快照(兜底全量对齐; 实时已由 onAppend 驱动)
             runCatching {
                 _state.update { it.copy(messages = sessionStore.messages(sessionId)) }
             }
