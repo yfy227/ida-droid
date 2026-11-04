@@ -220,12 +220,6 @@ class PiAgentManager(
     }
 
     // ==================== V7.1: 双轨通道(新旧并存, UI 开关切换) ====================
-    /**
-     * V7.3 主轨反转: v7 引擎=默认主轨(L1-L3 全链), false 时回落旧引擎(兼容逃生舱)。
-     * 设置页开关语义已同步更新。
-     */
-    @Volatile var useV7Engine: Boolean = true
-
     fun sendPromptV7(text: String, attachments: List<DraftAttachment> = emptyList()) {
         scope.launch {
             sendMutex.withLock {
@@ -343,133 +337,12 @@ class PiAgentManager(
         }
     }
 
+    /**
+     * V7.4: 旧发送链退役 — sendPrompt 转发 v7 主轨(签名兼容保留)。
+     * 原 sendPromptInternal(300 行) 已删除; 旧 ConversationEngine.send 不再承载会话。
+     */
     fun sendPrompt(text: String, attachments: List<DraftAttachment> = emptyList(), sendMode: String? = null) {
-        scope.launch {
-            // 用 sendMutex 串行化发送，消除 sendingInProgress 检查和实际发送之间的竞态
-            sendMutex.withLock {
-                if (sendingInProgress) {
-                    _state.update { it.copy(activity = "上一条消息仍在发送中，请稍候…") }
-                    return@withLock
-                }
-                sendingInProgress = true
-                try {
-                    sendPromptInternal(text, attachments, sendMode)
-                } finally {
-                    sendingInProgress = false
-                }
-            }
-        }
-    }
-
-    private suspend fun sendPromptInternal(text: String, attachments: List<DraftAttachment>, sendMode: String?) {
-        val sessionId = _state.value.activeSessionId ?: run {
-            val created = createDefaultSessionWithConfiguredModel()
-            refresh()
-            created.id
-        }
-        val trimmed = text.trimEnd()
-        if (trimmed.isBlank() && attachments.isEmpty()) return
-        // sendMutex 已在 sendPrompt 中获取，这里直接执行
-        try {
-                val session = repo.setActive(sessionId)
-                val stored = attachmentManager.storeAttachments(attachments)
-                val uploadedPaths = stored.map { it.prootPath }
-                val displayAttachments = stored.map { it.display }
-                val displayMessage = buildString {
-                    append(trimmed)
-                    if (uploadedPaths.isNotEmpty()) {
-                        if (isNotEmpty() && !last().isWhitespace()) append(' ')
-                        append(uploadedPaths.joinToString(" ") { attachmentManager.fileRef(it) })
-                    }
-                }.ifBlank { attachmentSummary(displayAttachments) }
-
-                appendMessage(ChatMessage(newMessageId(), "user", displayMessage, System.currentTimeMillis(), attachments = displayAttachments))
-                setTurnActive(sessionId, true)
-                val promptStartTime = System.currentTimeMillis()
-                // V6.7 fix: 会话统计累积 — 上一轮 usage 并入 activeStats(老板实测"累积都没有"的根因:
-                // activeStats 全工程从未赋值), 轮内顶部栏显示会话级累计
-                _state.update {
-                    val prevUsage = it.usage
-                    val msgs = it.messages
-                    val acc = it.activeStats
-                    it.copy(
-                        activity = "正在发送消息…", processingPhase = "connecting", promptSentAt = promptStartTime, firstDeltaAt = 0L,
-                        usage = TurnUsage(),
-                        activeStats = SessionStats(
-                            sessionId = sessionId,
-                            userMessages = msgs.count { m -> m.role == "user" },
-                            assistantMessages = msgs.count { m -> m.role == "assistant" },
-                            toolCalls = (acc?.toolCalls ?: 0),
-                            totalMessages = msgs.size,
-                            tokens = TokenStats(
-                                input = (acc?.tokens?.input ?: 0) + prevUsage.promptTokens,
-                                output = (acc?.tokens?.output ?: 0) + prevUsage.completionTokens,
-                                cacheRead = (acc?.tokens?.cacheRead ?: 0) + prevUsage.cachedPromptTokens,
-                                total = (acc?.tokens?.total ?: 0) + prevUsage.totalTokens
-                            )
-                        )
-                    )
-                }
-                // V5: 保活 — turn 进行期间前台服务 + PARTIAL_WAKE_LOCK(息屏不冻结长任务)
-                runCatching { dev.idadroid.service.KeepAliveService.beginTurn(appContext, "正在连接模型…") }
-
-                // ==================== 新架构路径 ====================
-                // 解析 API Key / Base URL / Model 从 PiConfigManager
-                val convConfig = resolveConvConfig(sessionId, session)
-                    ?: run {
-                        setTurnActive(sessionId, false)
-                        appendMessage(ChatMessage(newMessageId(), "system", "配置缺失：请先在设置中配置 API Key 和 Base URL", System.currentTimeMillis()))
-                        setError("配置缺失：请先在设置中配置 API Key 和 Base URL")
-                        return
-                    }
-
-                val expanded = attachmentManager.expandFileReferencesForPrompt(displayMessage, session.cwd)
-                currentSendJob = coroutineContext[Job]
-
-                try {
-                    // V5: 移除 withTimeout(180s) 腰斩 — agent 多轮工具长任务(run_shell 单工具
-                    // 上限 600s, IDA 分析常见 10-30 分钟)曾被整轮 3 分钟强制砍断。
-                    // 现在的超时分层: 单轮 LLM 调用由 ChatHttpClient readTimeout(300s) 保障,
-                    // 工具由 ToolExecutor 超时(120s 默认/600s 上限)保障, 用户可随时 abort()。
-                    // 唯一兜底: 30 分钟总上限, 防 agent loop 失控死循环烧 token。
-                    kotlinx.coroutines.withTimeout(TURN_HARD_LIMIT_MS) {
-                        val imageUris = expanded.images.map { img ->
-                            "data:${img.mimeType};base64,${img.data}"
-                        }
-                        conversationEngine.send(expanded.message, imageUris, convConfig) { event ->
-                            handleEngineEvent(sessionId, event, promptStartTime)
-                        }
-                    }
-                } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                    appendMessage(ChatMessage(newMessageId(), "system", "本轮已超过 30 分钟硬上限，自动结束（可继续发送新消息）", System.currentTimeMillis()))
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    android.util.Log.i("PiAgentManager", "Prompt cancelled by abort (sessionId=$sessionId)")
-                    throw e
-                } catch (e: Exception) {
-                    val msg = e.message ?: e::class.simpleName ?: "未知异常"
-                    appendMessage(ChatMessage(newMessageId(), "system", "发送失败：$msg", System.currentTimeMillis()))
-                    setError("发送失败：$msg")
-                } finally {
-                    currentSendJob = null
-                    finishStreamingFlush()
-                    if (_state.value.turnActive) setTurnActive(sessionId, false)
-                    // 持久化对话历史 — 防止崩溃/重启后丢失
-                    persistMessages(sessionId)
-                    // V6.9/L1: turn 统计持久化(store) — 重启后累积保留(V6.8 遗留修复)
-                    runCatching {
-                        val u = _state.value.usage
-                        if (u.totalTokens > 0) sessionStore.addTurnUsage(
-                            sessionId, u.promptTokens, u.completionTokens, u.cachedPromptTokens, u.totalTokens
-                        )
-                    }
-                }
-            } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                setTurnActive(sessionId, false)
-                val msg = e.message ?: e::class.simpleName ?: "未知异常"
-                appendMessage(ChatMessage(newMessageId(), "system", "发送失败：$msg", System.currentTimeMillis()))
-                setError("发送失败：$msg")
-            }
+        sendPromptV7(text, attachments)
     }
 
     fun abort(id: String? = null) {
