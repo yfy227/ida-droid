@@ -459,7 +459,7 @@ class PiAgentManager(
     }
 
     fun clearRawLog() {
-        _state.update { it.copy(rawLogLines = emptyList(), stderrTail = "") }
+        // V7.6: rawLogLines/stderrTail 僵尸字段已删(只清不写, 内容永远空)
     }
 
     // ==================== 工作区相关 ====================

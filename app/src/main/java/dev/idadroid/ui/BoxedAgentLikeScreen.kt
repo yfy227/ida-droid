@@ -355,7 +355,7 @@ fun BoxedAgentLikeScreen(
     val visibleRuntimeError = agentState.error?.trim()?.takeIf { error ->
         error.isNotBlank() && agentState.messages.none { it.role == "system" && it.text.contains(error) }
     }
-    val visibleRuntimeErrorText = visibleRuntimeError?.let { runtimeErrorText(it, agentState.stderrTail) }
+    val visibleRuntimeErrorText = visibleRuntimeError?.let { runtimeErrorText(it, "") }
     val latestProgress = agentState.messages.lastOrNull { it.role == "tool" || (it.role == "assistant" && it.thinking?.isNotBlank() == true) }
     val autoOpenProgressId = if (agentState.isWorking) latestProgress?.id else null
     val latestProgressArgsKey = latestProgress?.toolArgs?.toString()?.let { "${it.length}:${it.hashCode()}" }
@@ -2489,7 +2489,7 @@ private fun ChatComposer(
 ) {
     Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp), color = MaterialTheme.colorScheme.surfaceContainerLow, contentColor = MaterialTheme.colorScheme.onSurface, shape = RoundedCornerShape(28.dp)) {
         Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            if (state.activeQueue.steering.isNotEmpty() || state.activeQueue.followUp.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) { state.activeQueue.steering.forEach { AssistChip(onClick = {}, label = { Text("Steer · $it") }) }; state.activeQueue.followUp.forEach { AssistChip(onClick = {}, label = { Text("Follow-up · $it") }) } }
+            // V7.6: activeQueue 僵尸字段已删(零写入, 永远空 — Steer/Follow-up 死 UI 一并移除)
             TurnUsageBar(usage = state.usage, isWorking = state.isWorking)
             // V6.4 Codex: 底部状态行 — 模型 · 上下文水位 · 会话状态(常驻, 等宽数字)
             Row(
